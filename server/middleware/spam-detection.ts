@@ -1,18 +1,43 @@
 // const SpamScanner = require('spamscanner');
-import { validate } from 'npm:deep-email-validator';
-import { Req, Res, Next, ServerFunction } from "../structure/app.ts";
-import { log } from "../utilities/terminal-logging.ts";
+import { validate } from 'deep-email-validator';
+import { ServerFunction } from '../structure/app/app';
+/**
+ * Options for the spam detection middleware
+ * @date 1/9/2024 - 1:19:48 PM
+ *
+ * @export
+ * @typedef {Options}
+ */
 export type Options = {
-    onspam?: (req: Req, res: Res, next: Next) => void;
-    onerror?: (req: Req, res: Res, next: Next) => void;
+    /**
+     * Called when the request is flagged as spam
+     * @param req
+     * @param res
+     * @param next
+     * @returns
+     */
+    onspam?: ServerFunction;
+
+    /**
+     * Called when an error occurs
+     * @param req
+     * @param res
+     * @param next
+     * @returns
+     */
+    onerror?: ServerFunction;
+
+    /**
+     * Whether or not to continue to the next middleware function (default: false)
+     */
     goToNext?: boolean;
-}
+};
 
 // export const detectSpam = (keys: string[], options: Options = {}): NextFunction => {
 //         const fn = (req: Request, res: Response, next: NextFunction) => {
 //         const arr = keys.map(key => req.body[key]);
 
-//         if (!arr.length) return next();    
+//         if (!arr.length) return next();
 //         const scanner = new SpamScanner();
 
 //         Promise.all(arr.map(value => scanner.scan(value)))
@@ -37,25 +62,38 @@ export type Options = {
 //     return fn as NextFunction;
 // };
 
+/**
+ * Ensures that the specified keys are valid emails
+ * @date 1/9/2024 - 1:19:48 PM
+ */
+export const emailValidation = (
+    keys: string[],
+    options: Options = {}
+): ServerFunction => {
+    return (req, res, next) => {
+        const arr = keys
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            .map(key => (req.body ? (req.body as any)[key] : ''))
+            .filter(Boolean);
 
-export const emailValidation = (keys: string[], options: Options = {}): ServerFunction => {
-    return (req: Req, res: Res, next: Next) => {
-        const arr = keys.map(key => req.body[key]).filter(Boolean);
+        if (!arr.length) return next();
 
-        if (!arr.length) return next();    
-
-        Promise.all(arr.map(value => validate({ email: value })))
-            .then((results) => {
+        Promise.all(
+            arr.map(async value => {
+                if (typeof value !== 'string') return { valid: false };
+                return validate({ email: value });
+            })
+        )
+            .then(results => {
                 const valid = results.every(result => result.valid);
                 if (valid) return next();
-                req.body.__emailResults = results;
                 if (options.onspam) return options.onspam(req, res, next);
                 if (options.goToNext) next();
             })
-            .catch(err => {
+            .catch(_err => {
                 if (options.onerror) return options.onerror(req, res, next);
                 // console.error(err);
                 next();
             });
-    }
+    };
 };

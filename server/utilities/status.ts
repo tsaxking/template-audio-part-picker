@@ -1,26 +1,21 @@
-import { getTemplateSync, log } from "./files.ts";
-import { Session } from "../structure/sessions.ts";
-import { Server } from "npm:socket.io";
-import { messages, StatusId, StatusCode, StatusMessage, StatusColor } from "../../shared/status-messages.ts";
-import { Next, ServerFunction } from "../structure/app/app.ts";
-import { Req } from "../structure/app/req.ts";
-import { Res } from "../structure/app/res.ts";
-
-declare global {
-    namespace Express {
-        interface Request {
-            session: Session;
-            start: number;
-            io: Server;
-        }
-    }
-}
-
-
-
+import { FileError, getTemplateSync, log } from './files';
+import { Session } from '../structure/sessions';
+import {
+    messages,
+    StatusCode,
+    StatusColor,
+    StatusId,
+    StatusMessage
+} from '../../shared/status-messages';
+import { Next, ServerFunction } from '../structure/app/app';
+import { Req } from '../structure/app/req';
+import { Res } from '../structure/app/res';
+import { Result } from '../../shared/check';
+import env from './env';
 
 /**
- * Description placeholder
+ * Status class, used to send pre-made status messages to the client
+ * These messages also add logs to the ./storage/logs/status.csv file
  * @date 10/12/2023 - 3:26:23 PM
  *
  * @export
@@ -29,7 +24,8 @@ declare global {
  */
 export class Status {
     /**
-     * Description placeholder
+     * Status middleware, used to check if a user fulfills a certain requirement
+     * This could be used to check if a user is logged in, or if they have a certain role
      * @date 10/12/2023 - 3:26:23 PM
      *
      * @static
@@ -37,7 +33,10 @@ export class Status {
      * @param {(session: Session) => boolean} test
      * @returns {ServerFunction}
      */
-    static middleware(id: StatusId, test: (session: Session) => boolean): ServerFunction<any> {
+    static middleware(
+        id: StatusId,
+        test: (session: Session) => boolean
+    ): ServerFunction {
         return (req: Req, res: Res, next: Next) => {
             if (test(req.session)) {
                 next();
@@ -45,16 +44,11 @@ export class Status {
                 const status = Status.from(id, req);
                 status.send(res);
             }
-        }
+        };
     }
 
-
-
-
-
-
     /**
-     * Description placeholder
+     * Generates a status object from a status id and a request object
      * @date 10/12/2023 - 3:26:23 PM
      *
      * @static
@@ -63,15 +57,14 @@ export class Status {
      * @param {?*} [data]
      * @returns {Status}
      */
-    static from(id: StatusId, req: Req, data?: any): Status {
+    static from(id: StatusId, req: Req, data?: unknown): Status {
+        let dataStr = 'No data';
         try {
-            data = JSON.stringify(data);
+            dataStr = JSON.stringify(data);
         } catch (e) {
             console.error('Unable to stringify data for status message.', e);
             console.log('Data:', data);
-            data = undefined;
         }
-
 
         const message = messages[id];
         if (!message) {
@@ -86,32 +79,24 @@ export class Status {
                 },
                 'Unknown Status Message',
                 'Unknown',
-                data,
+                dataStr,
                 req
             );
         }
 
         if (typeof id === 'number') {
-            throw new Error('Status message requested by number. Please use a string instead.');
+            throw new Error(
+                'Status message requested by number. Please use a string instead.'
+            );
         }
 
         const [title, status] = id.split(':');
 
-
-        return new Status(
-            message,
-            title,
-            status,
-            data,
-            req
-        )
+        return new Status(message, title, status, dataStr, req);
     }
 
-
-
-
     /**
-     * Description placeholder
+     * Message the user will see
      * @date 10/12/2023 - 3:26:23 PM
      *
      * @public
@@ -120,7 +105,7 @@ export class Status {
      */
     public readonly message: string;
     /**
-     * Description placeholder
+     * Bootstrap color the message will have
      * @date 10/12/2023 - 3:26:23 PM
      *
      * @public
@@ -129,7 +114,7 @@ export class Status {
      */
     public readonly color: StatusColor;
     /**
-     * Description placeholder
+     * HTTP status code
      * @date 10/12/2023 - 3:26:23 PM
      *
      * @public
@@ -138,7 +123,7 @@ export class Status {
      */
     public readonly code: StatusCode;
     /**
-     * Description placeholder
+     * Any instructions the user should follow
      * @date 10/12/2023 - 3:26:23 PM
      *
      * @public
@@ -147,25 +132,16 @@ export class Status {
      */
     public readonly instructions: string;
     /**
-     * Description placeholder
-     * @date 10/12/2023 - 3:26:23 PM
-     *
-     * @public
-     * @readonly
-     * @type {string}
-     */
-    public readonly data: string;
-    /**
-     * Description placeholder
+     * URL to redirect to
      * @date 10/12/2023 - 3:26:23 PM
      *
      * @public
      * @readonly
      * @type {?string}
      */
-    public readonly redirect?: string;
+    public redirect?: string;
     /**
-     * Description placeholder
+     * Request object
      * @date 10/12/2023 - 3:26:23 PM
      *
      * @public
@@ -173,8 +149,6 @@ export class Status {
      * @type {Req}
      */
     public readonly request: Req;
-
-
 
     /**
      * Creates an instance of Status.
@@ -191,29 +165,33 @@ export class Status {
         message: StatusMessage,
         public readonly title: string,
         public readonly status: string,
-        data: any,
+        public readonly data: string,
         req: Req
     ) {
         this.message = message.message;
         this.color = message.color;
         this.code = message.code;
         this.instructions = message.instructions;
-        this.data = data;
         this.redirect = message.redirect;
         this.request = req;
-
-
-        log('status', {
-            ...message,
-            data: data ? JSON.stringify(data) : 'No data provided.',
-            ip: req.session.ip,
-            username: req.session.account?.username,
-            sessionId: req.session.id
+        // Log the status message in the ./storage/logs/status.csv file
+        setTimeout(async () => {
+            const a = await req.session.getAccount();
+            log('status', {
+                title: String(this.title),
+                message: String(message.message),
+                status: String(status),
+                code: String(message.code),
+                instructions: String(message.instructions),
+                redirect: String(message.redirect),
+                data: data ? JSON.stringify(data) : 'No data provided.',
+                ip: req.session.ip,
+                username: a?.username,
+                sessionId: req.session.id
+            });
         });
 
-
-
-        // Send email to admins if error
+        // TODO: Send email to admins if server error
         // if (status === ColorCode.majorError && env.SEND_STATUS_EMAILS === 'TRUE') {
         //     Account.fromRole('admin')
         //         .then(admins => {
@@ -241,7 +219,7 @@ export class Status {
     }
 
     /**
-     * Description placeholder
+     * Generates the HTML for the status message
      * @date 10/12/2023 - 3:26:23 PM
      *
      * @readonly
@@ -249,13 +227,20 @@ export class Status {
      */
     get html() {
         return getTemplateSync('status', {
-            ...this,
-            data: this.data ? JSON.stringify(this.data) : 'No data provided.'
+            title: this.title,
+            status: this.status,
+            message: this.message,
+            code: this.code,
+            instructions: this.instructions,
+            data: this.data,
+            redirect: this.redirect,
+            color: this.color,
+            page: env.TITLE || 'My App'
         });
     }
 
     /**
-     * Description placeholder
+     * Generates a safe json for the status message (excludes the request object)
      * @date 10/12/2023 - 3:26:23 PM
      *
      * @readonly
@@ -264,33 +249,41 @@ export class Status {
     get json() {
         return {
             title: this.title,
-            status: this.status,
+            $status: this.status,
             message: this.message,
             code: this.code,
             instructions: this.instructions,
             data: JSON.parse(this.data || '{}'),
             redirect: this.redirect,
             color: this.color
-        }
+        };
     }
 
     /**
-     * Description placeholder
+     * Sends the status message to the client (either as json or html, depending on the request method)
      * @date 10/12/2023 - 3:26:23 PM
      *
      * @param {Res} res
      */
     send(res: Res) {
+        let r: Result<string, FileError> | undefined;
         switch (this.request.method) {
-            case 'GET':
-                res.status(this.code).send(this.html);
-                break;
             case 'POST':
-                res.status(this.code).json(this.json);
-                break;
+                return res.status(this.code).json(this.json);
+            case 'GET':
             default:
-                res.status(this.code).send(this.html);
+                r = this.html;
                 break;
         }
+
+        if (!r) {
+            throw new Error('Unable to get status template');
+        }
+
+        if (r.isErr()) {
+            throw new Error(r.error);
+        }
+
+        res.status(this.code).send(r.value);
     }
 }

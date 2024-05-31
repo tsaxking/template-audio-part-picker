@@ -11,20 +11,19 @@ CREATE TABLE IF NOT EXISTS Accounts (
     verified INTEGER NOT NULL DEFAULT 0,
     verification TEXT,
     emailChange TEXT,
-    passwordChangeDate TEXT,
+    passwordChangeDate BIGINT,
     phoneNumber TEXT,
-    created TEXT NOT NULL
+    created BIGINT NOT NULL
 );
 
 
 CREATE TABLE IF NOT EXISTS Members (
     id TEXT PRIMARY KEY,
     title TEXT,
-    status TEXT,
+    status TEXT DEFAULT 'pending',
     bio TEXT,
     resume TEXT,
-    board INTEGER NOT NULL DEFAULT 0,
-    FOREIGN KEY (id) REFERENCES Accounts(id)
+    board INTEGER NOT NULL DEFAULT 0
 );
 
 
@@ -38,15 +37,17 @@ CREATE TABLE IF NOT EXISTS Roles (
 
 CREATE TABLE IF NOT EXISTS AccountRoles (
     accountId TEXT NOT NULL,
-    roleId TEXT NOT NULL,
-    FOREIGN KEY (accountId) REFERENCES Accounts(id),
-    FOREIGN KEY (roleId) REFERENCES Roles(id)
+    roleId TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS Permissions (
+    permission TEXT NOT NULL, -- changed to primary key in 1-3-0
+    description TEXT
+);
+
+CREATE TABLE IF NOT EXISTS RolePermissions (
     roleId TEXT NOT NULL,
-    permission TEXT NOT NULL,
-    FOREIGN KEY (roleId) REFERENCES Roles(id)
+    permission TEXT NOT NULL
 );
 
 
@@ -58,7 +59,9 @@ CREATE TABLE IF NOT EXISTS Permissions (
 
 
 CREATE TABLE IF NOT EXISTS Version (
-    version INTEGER NOT NULL
+    major INTEGER NOT NULL DEFAULT 1,
+    minor INTEGER NOT NULL DEFAULT 0,
+    patch INTEGER NOT NULL DEFAULT 0
 );
 
 
@@ -67,12 +70,18 @@ CREATE TABLE IF NOT EXISTS Sessions (
     accountId TEXT,
     ip TEXT,
     userAgent TEXT,
-    latestActivity TEXT,
+    latestActivity BIGINT,
     requests INTEGER NOT NULL DEFAULT 0,
-    created INTEGER NOT NULL,
+    created BIGINT NOT NULL,
     prevUrl TEXT
+
+    -- customData TEXT NOT NULL DEFAULT '{}' -- added in 1-4-0
 );
 
+CREATE TABLE IF NOT EXISTS AccountSettings (
+    accountId TEXT NOT NULL PRIMARY KEY,
+    settings TEXT NOT NULL -- JSON
+);
 
 -- CREATE TABLE IF NOT EXISTS BlockList (
 --     ip TEXT PRIMARY KEY,
@@ -84,9 +93,12 @@ CREATE TABLE IF NOT EXISTS Sessions (
 -- Reset the version number
 DELETE FROM Version;
 
-
 INSERT INTO Version (
-    version
+    major,
+    minor,
+    patch
 ) VALUES (
-    1
+    1,
+    0,
+    0
 );

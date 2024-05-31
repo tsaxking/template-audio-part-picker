@@ -1,36 +1,17 @@
-import { getJSON, getTemplate } from './files.ts';
-import { fromSnakeCase, capitalize } from '../../shared/text.ts';
-import { Server } from 'npm:socket.io';
-import { Session } from '../structure/sessions.ts';
-import { SocketWrapper } from '../structure/socket.ts';
-import { Req } from "../structure/app/req.ts";
-import { Res } from "../structure/app/res.ts";
-import { Next, ServerFunction } from "../structure/app/app.ts";
+/**
+ * @fileoverview This file is used to build static home pages given the request object. It is used for server side rendering and front end multi-page applications.
+ */
 
-
-declare global {
-    namespace Express {
-        interface Request {
-            session: Session;
-            start: number;
-            io: Server;
-            file?: {
-                id: string;
-                name: string;
-                size: number;
-                type: string;
-                ext: string;
-                contentType: string;
-                filename: string
-            }
-            socketIO?: SocketWrapper;
-        }
-    }
-}
-
+import { getJSON, getTemplate } from './files';
+import { capitalize, fromSnakeCase } from '../../shared/text';
+import { Req } from '../structure/app/req';
+import { Res } from '../structure/app/res';
+import { Next } from '../structure/app/app';
+import { attemptAsync } from '../../shared/check';
+import env from './env';
 
 /**
- * Description placeholder
+ * Object containing all the pages that can be built
  * @date 10/12/2023 - 3:25:12 PM
  *
  * @type {{
@@ -56,9 +37,8 @@ const builds: {
     */
 };
 
-
 /**
- * Description placeholder
+ * Middleware that builds the page if it exists
  * @date 10/12/2023 - 3:25:12 PM
  *
  * @async
@@ -66,31 +46,50 @@ const builds: {
 export const builder = async (req: Req, res: Res, next: Next) => {
     const { url } = req;
     if (builds[url]) {
-        res.send(await builds[url](req));
+        const r = await homeBuilder(url);
+        if (r.isOk()) res.send(r.value);
+        else {
+            res.sendStatus('server:unknown-server-error');
+        }
     } else {
         next();
     }
 };
 
 /**
- * Description placeholder
+ * Builds the home pages using a template
  * @date 10/12/2023 - 3:25:12 PM
  *
  * @async
  */
 export const homeBuilder = async (url: string) => {
-    return await getTemplate('home/index', {
-        pageTitle: capitalize(fromSnakeCase(url, '-')).slice(1),
-        content: builds[url] ? await builds[url]() : '',
-        footer: await getTemplate('components/footer', {
-            year: new Date().getFullYear()
-        }),
-        navbar: await navBuilder(url, false)
+    return attemptAsync(async () => {
+        if (!builds[url]) throw new Error('Page not found');
+        const [footerResult, navbarResult] = await Promise.all([
+            getTemplate('components/footer', {
+                year: new Date().getFullYear(),
+                title: env.TITLE
+            }),
+            navBuilder(url, false)
+        ]);
+
+        if (footerResult.isErr()) throw new Error(footerResult.error);
+        if (navbarResult.isErr()) throw new Error(navbarResult.error);
+
+        const r = await getTemplate('page-builder', {
+            pageTitle: capitalize(fromSnakeCase(url, '-')).slice(1),
+            content: await builds[url](),
+            footer: footerResult.value,
+            navbar: navbarResult.value
+        });
+
+        if (r.isErr()) throw new Error(r.error);
+        return r.value;
     });
 };
 
 /**
- * Description placeholder
+ * Generates the navbar
  * @date 10/12/2023 - 3:25:12 PM
  *
  * @async
@@ -100,14 +99,16 @@ export const navBuilder = async (url: string, offcanvas: boolean) => {
         offcanvas: {
             offcanvas
         },
-        navbarRepeat: await getJSON<string[]>('pages/home').then((data) => {
-            return data.map((page: string) => {
+        navbarRepeat: await getJSON<string[]>('pages/home').then(r => {
+            if (r.isErr()) throw new Error(r.error);
+            return r.value.map((page: string) => {
                 return {
                     active: '/' + page === url,
                     name: capitalize(fromSnakeCase(page, '-')),
-                    link: '/' + page
-                }
+                    href: '/' + page,
+                    disabled: false
+                };
             });
         })
-    })
-}
+    });
+};

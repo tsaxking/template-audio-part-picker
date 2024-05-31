@@ -1,7 +1,12 @@
-import { sleep } from "../../shared/sleep";
-import { notify } from "./notifications";
+import { sleep } from '../../shared/sleep';
+import { notify } from './notifications';
 import { EventEmitter } from '../../shared/event-emitter';
-import { StatusJson } from "../../shared/status";
+import { StatusJson } from '../../shared/status';
+import { streamDelimiter } from '../../shared/text';
+import { uuid as _uuid } from '../../server/utilities/uuid';
+import { attemptAsync, Result } from '../../shared/check';
+import { error, log, warn } from './logging';
+import { bigIntDecode } from '../../shared/objects';
 
 /**
  * These are optional options for a request
@@ -15,7 +20,7 @@ export type RequestOptions = {
         [key: string]: string;
     };
 
-    cached: boolean;
+    cached?: boolean;
 };
 
 /**
@@ -28,39 +33,33 @@ export type RequestOptions = {
 export type StreamOptions = {
     headers?: {
         [key: string]: string;
-    }
+    };
 };
-
 
 /**
  * These are the possible updates that can be emitted from a stream emitter
  * @date 10/12/2023 - 1:19:15 PM
  *
- * @typedef {SendStreamEventData}
+ * @typedef {SendFileStreamEventData}
  */
-type SendStreamEventData = {
-    'progress': ProgressEvent<EventTarget>;
-    'complete': ProgressEvent<EventTarget>;
-    'error': ProgressEvent<EventTarget>;
+type SendFileStreamEventData = {
+    progress: ProgressEvent<EventTarget>;
+    complete: ProgressEvent<EventTarget>;
+    error: ProgressEvent<EventTarget>;
 };
 
-
 /**
- * Description placeholder
+ * Event emitter for sending a stream
  * @date 10/12/2023 - 1:19:15 PM
  *
  * @typedef {RetrieveStreamEventData}
  * @template T
  */
 type RetrieveStreamEventData<T> = {
-    'chunk': T;
-    'complete': T[];
-    'error': Error;
+    chunk: T;
+    complete: T[];
+    error: Error;
 };
-
-
-
-
 
 /**
  * Event emitter for retrieving a stream
@@ -72,7 +71,9 @@ type RetrieveStreamEventData<T> = {
  * @template [T=string]
  * @extends {EventEmitter<RetrieveStreamEvent<T>>}
  */
-export class RetrieveStreamEventEmitter<T = string> extends EventEmitter<keyof RetrieveStreamEventData<T>> {
+export class RetrieveStreamEventEmitter<T = string> extends EventEmitter<
+    keyof RetrieveStreamEventData<T>
+> {
     /**
      * Creates an instance of RetrieveStreamEventEmitter.
      * @date 10/12/2023 - 1:19:15 PM
@@ -91,7 +92,10 @@ export class RetrieveStreamEventEmitter<T = string> extends EventEmitter<keyof R
      * @param {K} event
      * @param {(data: RetrieveStreamEventData<T>[K]) => void} callback
      */
-    on<K extends keyof RetrieveStreamEventData<T>>(event: K, callback: (data: RetrieveStreamEventData<T>[K]) => void): void {
+    on<K extends keyof RetrieveStreamEventData<T>>(
+        event: K,
+        callback: (data: RetrieveStreamEventData<T>[K]) => void
+    ): void {
         super.on(event, callback);
     }
 
@@ -103,7 +107,10 @@ export class RetrieveStreamEventEmitter<T = string> extends EventEmitter<keyof R
      * @param {K} event
      * @param {RetrieveStreamEventData<T>[K]} data
      */
-    emit<K extends keyof RetrieveStreamEventData<T>>(event: K, data: RetrieveStreamEventData<T>[K]): void {
+    emit<K extends keyof RetrieveStreamEventData<T>>(
+        event: K,
+        data: RetrieveStreamEventData<T>[K]
+    ): void {
         super.emit(event, data);
     }
 
@@ -115,7 +122,10 @@ export class RetrieveStreamEventEmitter<T = string> extends EventEmitter<keyof R
      * @param {K} event
      * @param {(data: RetrieveStreamEventData<T>[K]) => void} callback
      */
-    off<K extends keyof RetrieveStreamEventData<T>>(event: K, callback: (data: RetrieveStreamEventData<T>[K]) => void): void {
+    off<K extends keyof RetrieveStreamEventData<T>>(
+        event: K,
+        callback: (data: RetrieveStreamEventData<T>[K]) => void
+    ): void {
         super.off(event, callback);
     }
 
@@ -128,15 +138,198 @@ export class RetrieveStreamEventEmitter<T = string> extends EventEmitter<keyof R
      * @returns {Promise<T[]>}
      */
     get promise() {
-        return new Promise<T[]>((res, rej) => {
+        return new Promise<T[]>(res => {
             this.on('complete', res);
         });
     }
 }
 
+/**
+ * Events that can be emitted from a send stream
+ * @date 1/8/2024 - 3:39:39 PM
+ *
+ * @typedef {SendStreamEventData}
+ */
+type SendStreamEventData = {
+    end: undefined;
+    error: Error;
+    progress: number;
+};
 
+/**
+ * Options for sending a stream
+ * @date 1/8/2024 - 3:39:39 PM
+ *
+ * @typedef {SendStreamOptions}
+ */
+type SendStreamOptions = {
+    rate: number;
+};
 
+/**
+ * Sends a stream of data to the server, the back end must use the built in stream handler to receive the data
+ * @date 1/8/2024 - 3:39:39 PM
+ *
+ * @class SendStream
+ * @typedef {SendStream}
+ */
+export class SendStream {
+    /**
+     * Event emitter for sending a stream
+     * @date 1/8/2024 - 3:39:39 PM
+     *
+     * @private
+     * @readonly
+     * @type {*}
+     */
+    private readonly $emitter = new EventEmitter<keyof SendStreamEventData>();
+    /**
+     * The data that will be sent to the server
+     * @date 1/8/2024 - 3:39:39 PM
+     *
+     * @private
+     * @readonly
+     * @type {string[]}
+     */
+    private readonly data: string[] = [];
+    /**
+     * The interval that sends the data to the server
+     * @date 1/8/2024 - 3:39:39 PM
+     *
+     * @private
+     * @type {(number | NodeJS.Timeout)}
+     */
+    private interval?: number | NodeJS.Timeout;
 
+    /**
+     * Creates an instance of SendStream.
+     * @date 1/8/2024 - 3:39:39 PM
+     *
+     * @constructor
+     * @param {string} url
+     * @param {SendStreamOptions} options
+     */
+    constructor(
+        public readonly url: string,
+        public readonly options: SendStreamOptions
+    ) {}
+
+    /**
+     * Add data you want sent to the server
+     * @date 1/8/2024 - 3:39:39 PM
+     *
+     * @param {string} data
+     */
+    add(data: string) {
+        this.data.push(data);
+    }
+
+    /**
+     * Adds an event listener
+     * @date 1/8/2024 - 3:39:39 PM
+     *
+     * @template {keyof SendStreamEventData} K
+     * @param {K} event
+     * @param {(data: SendStreamEventData[K]) => void} callback
+     */
+    on<K extends keyof SendStreamEventData>(
+        event: K,
+        callback: (data: SendStreamEventData[K]) => void
+    ): void {
+        this.$emitter.on(event, callback);
+    }
+
+    /**
+     * Emits an event
+     * @date 1/8/2024 - 3:39:39 PM
+     *
+     * @template {keyof SendStreamEventData} K
+     * @param {K} event
+     * @param {SendStreamEventData[K]} data
+     */
+    emit<K extends keyof SendStreamEventData>(
+        event: K,
+        data: SendStreamEventData[K]
+    ): void {
+        this.$emitter.emit(event, data);
+    }
+
+    /**
+     * Removes an event listener
+     * @date 1/8/2024 - 3:39:39 PM
+     *
+     * @template {keyof SendStreamEventData} K
+     * @param {K} event
+     * @param {(data: SendStreamEventData[K]) => void} callback
+     */
+    off<K extends keyof SendStreamEventData>(
+        event: K,
+        callback: (data: SendStreamEventData[K]) => void
+    ): void {
+        this.$emitter.off(event, callback);
+    }
+
+    /**
+     * Sends the data to the server on an interval (will not stop until you call stop())
+     * @date 1/8/2024 - 3:39:39 PM
+     */
+    send() {
+        let i = 0;
+        this.interval = setInterval(async () => {
+            if (this.data.length) {
+                const data = this.data.shift();
+                if (data) {
+                    ServerRequest.post<{
+                        index: number;
+                        status: 'received' | 'end' | 'error';
+                    }>(this.url, {
+                        data,
+                        index: i,
+                        size: new TextEncoder().encode(data).length,
+                        type: 'data'
+                    })
+                        .then(data => {
+                            if (data.isOk()) {
+                                const { value } = data;
+
+                                switch (value.status) {
+                                    case 'received':
+                                        this.emit('progress', i);
+                                        break;
+                                    case 'end':
+                                        this.emit('end', undefined);
+                                        break;
+                                    case 'error':
+                                        this.emit(
+                                            'error',
+                                            new Error('Server error')
+                                        );
+                                        break;
+                                }
+                            }
+                        })
+                        .catch((error: Error) => {
+                            this.emit('error', error);
+                        });
+                }
+
+                i++;
+            }
+        }, this.options.rate); // 30 fps
+    }
+
+    /**
+     * Stops the stream
+     * @date 1/8/2024 - 3:39:39 PM
+     */
+    stop() {
+        if (this.interval) clearInterval(this.interval);
+        this.emit('end', undefined);
+        ServerRequest.post(this.url, {
+            type: 'end'
+        });
+    }
+}
 
 /**
  * This class is meant for the purpose of sending requests to the hosted server using fetch and xhr requests
@@ -166,7 +359,7 @@ export class ServerRequest<T = unknown> {
      * @readonly
      * @type {(ServerRequest|undefined)}
      */
-    static get last(): ServerRequest|undefined {
+    static get last(): ServerRequest | undefined {
         return this.all[this.all.length - 1];
     }
 
@@ -179,7 +372,7 @@ export class ServerRequest<T = unknown> {
      * @type {ServerRequest[]}
      */
     static get errors(): ServerRequest[] {
-        return this.all.filter((r) => r.error);
+        return this.all.filter(r => r.error);
     }
 
     /**
@@ -191,7 +384,7 @@ export class ServerRequest<T = unknown> {
      * @type {ServerRequest[]}
      */
     static get successes(): ServerRequest[] {
-        return this.all.filter((r) => !r.error);
+        return this.all.filter(r => !r.error);
     }
 
     /**
@@ -242,11 +435,16 @@ export class ServerRequest<T = unknown> {
      * @param {?RequestOptions} [options]
      * @returns {Promise<T>}
      */
-    static async post<T>(url: string, body?: any, options?: RequestOptions): Promise<T> {
-        const r = new ServerRequest<T>(url, 'post', body, options);
-        return r.send();
+    static async post<T>(
+        url: string,
+        body?: unknown,
+        options?: RequestOptions
+    ): Promise<Result<T>> {
+        return attemptAsync(async () => {
+            const r = new ServerRequest<T>(url, 'post', body, options);
+            return r.send();
+        });
     }
-
 
     /**
      * Send a get request to the server that returns a promise with a generic type
@@ -259,9 +457,14 @@ export class ServerRequest<T = unknown> {
      * @param {?RequestOptions} [options]
      * @returns {Promise<T>}
      */
-    static async get<T>(url: string, options?: RequestOptions): Promise<T> {
-        const r = new ServerRequest<T>(url, 'get', undefined, options);
-        return r.send();
+    static async get<T>(
+        url: string,
+        options?: RequestOptions
+    ): Promise<Result<T>> {
+        return attemptAsync(async () => {
+            const r = new ServerRequest<T>(url, 'get', undefined, options);
+            return r.send();
+        });
     }
 
     /**
@@ -273,10 +476,9 @@ export class ServerRequest<T = unknown> {
      * @param {ServerRequest[]} requests
      * @returns {Promise<any[]>}
      */
-    static async multiple(requests: ServerRequest[]): Promise<any[]> {
-        return Promise.all(requests.map((r) => r.send()));
+    static async multiple(requests: ServerRequest[]): Promise<unknown[]> {
+        return Promise.all(requests.map(r => r.send()));
     }
-
 
     /**
      * Sends a stream of files to the server, the back end must use the built in stream handler to receive the files
@@ -287,10 +489,15 @@ export class ServerRequest<T = unknown> {
      * @param {FileList} files
      * @param {?*} [body]
      * @param {?StreamOptions} [options]
-     * @returns {EventEmitter<keyof SendStreamEventData>}
+     * @returns {EventEmitter<keyof SendFileStreamEventData>}
      */
-    static streamFiles(url: string, files: FileList, body?: any, options?: StreamOptions): EventEmitter<keyof SendStreamEventData> {
-        const emitter = new EventEmitter<keyof SendStreamEventData>();
+    static streamFiles(
+        url: string,
+        files: FileList,
+        body?: unknown,
+        options?: StreamOptions
+    ): EventEmitter<keyof SendFileStreamEventData> {
+        const emitter = new EventEmitter<keyof SendFileStreamEventData>();
 
         const formData = new FormData();
         for (let i = 0; i < files.length; i++) {
@@ -318,18 +525,40 @@ export class ServerRequest<T = unknown> {
             xhr.setRequestHeader('X-Body', JSON.stringify(body));
         }
 
-
-        xhr.upload.onprogress = (e) => {
+        xhr.upload.onprogress = e => {
             emitter.emit('progress', e);
-        }
+        };
 
-        xhr.upload.onerror = (e) => {
+        xhr.upload.onerror = e => {
             emitter.emit('error', e);
-        }
+        };
 
-        xhr.upload.onload = (e) => {
+        xhr.upload.onloadend = e => {
             emitter.emit('complete', e);
-        }
+
+            const interval = setInterval(() => {
+                if (xhr.readyState === 4) {
+                    clearInterval(interval);
+                    emitter.emit('complete', e);
+                    const data = JSON.parse(
+                        xhr.responseText || '{}'
+                    ) as StatusJson;
+                    if (data.$status) {
+                        // this is a notification
+                        const d = data as StatusJson;
+                        notify(
+                            {
+                                title: d.title,
+                                message: d.message,
+                                status: d.$status,
+                                color: d.color
+                            },
+                            'alert'
+                        );
+                    }
+                }
+            }, 10);
+        };
 
         xhr.send(formData);
         return emitter;
@@ -346,7 +575,11 @@ export class ServerRequest<T = unknown> {
      * @param {?(data: string) => K} [parser]
      * @returns {RetrieveStreamEventEmitter<K>}
      */
-    static retrieveStream<K = string>(url: string, body?: any, parser?: (data: string) => K): RetrieveStreamEventEmitter<K> {
+    static retrieveStream<K = string>(
+        url: string,
+        body?: unknown,
+        parser?: (data: string) => K
+    ): RetrieveStreamEventEmitter<K> {
         const output: K[] = [];
 
         const emitter = new RetrieveStreamEventEmitter<K>();
@@ -358,34 +591,83 @@ export class ServerRequest<T = unknown> {
             },
             body: JSON.stringify(body)
         })
-            .then(r => r.body?.getReader())
-            .then(reader => {
-                if (!reader) return emitter.emit('error', new Error('No reader found'));
+            .then(res => {
+                const dataLength = parseInt(
+                    res.headers.get('x-data-length') || '0'
+                );
 
-                console.log('Stream started...');
+                const reader = res.body?.getReader();
+                if (!reader) {
+                    return emitter.emit('error', new Error('No reader found'));
+                }
 
-                reader.read().then(function process({ done, value }) {
+                let i = 0;
+                let last: string | undefined;
+                reader.read().then(async function process({
+                    done,
+                    value
+                }): Promise<ReadableStreamReadResult<Uint8Array> | undefined> {
                     if (done) {
+                        console.log('Stream complete, received', i, 'chunks');
                         emitter.emit('complete', output);
                         return;
                     }
 
                     if (value) {
                         const d = new TextDecoder().decode(value);
-                        if (parser) {
-                            output.push(parser(d));
-                            emitter.emit('chunk', parser(d));
-                        } else {
-                            output.push(d as K);
-                            emitter.emit('chunk', d as K);
+                        // log(done, d);
+                        const split = d.split(streamDelimiter);
+                        if (last) split[0] = last + split[0];
+                        last = split.pop();
+
+                        for (let s of split) {
+                            s = decodeURI(s);
+                            if (s) {
+                                i++;
+                                if (parser) {
+                                    output.push(parser(s));
+                                    emitter.emit('chunk', parser(s));
+                                } else {
+                                    output.push(s as K);
+                                    emitter.emit('chunk', s as K);
+                                }
+
+                                if (i >= dataLength) {
+                                    emitter.emit('complete', output);
+                                }
+                            }
                         }
                     }
+                    i++;
                     return reader.read().then(process);
                 });
             })
             .catch(e => emitter.emit('error', new Error(e)));
 
         return emitter;
+    }
+
+    /**
+     * Sends a stream of data to the server, the back end must use the built in stream handler to receive the data
+     * @param {string} url
+     * @param {SendStreamOptions} [options]
+     * @returns {SendStream}
+     */
+    static stream(url: string, data?: string[], options?: SendStreamOptions) {
+        const sendStream = new SendStream(
+            url,
+            options || {
+                rate: 1000 / 30
+            }
+        );
+
+        if (data) {
+            for (const d of data) {
+                sendStream.add(d);
+            }
+        }
+
+        return sendStream;
     }
 
     /**
@@ -419,7 +701,7 @@ export class ServerRequest<T = unknown> {
      * @public
      * @type {boolean}
      */
-    public sent: boolean = false;
+    public sent = false;
     /**
      *  Duration of the request
      * @date 10/12/2023 - 1:19:15 PM
@@ -443,7 +725,7 @@ export class ServerRequest<T = unknown> {
      * @private
      * @type {boolean}
      */
-    private cached: boolean = false;
+    private cached = false;
 
     /**
      * Creates an instance of ServerRequest.
@@ -458,13 +740,11 @@ export class ServerRequest<T = unknown> {
     constructor(
         public readonly url: string,
         public readonly method: 'get' | 'post' = 'post',
-        public readonly body?: any,
+        public readonly body?: unknown,
         public readonly options?: RequestOptions
     ) {
         ServerRequest.all.push(this);
     }
-
-
 
     /**
      * Sends the request to the server and returns a promise with a generic type
@@ -474,6 +754,29 @@ export class ServerRequest<T = unknown> {
      * @returns {Promise<T>}
      */
     async send(): Promise<T> {
+        const isRequesting = ServerRequest.all.filter(
+            r =>
+                r.url === this.url &&
+                r.sent &&
+                JSON.stringify(r.body) === JSON.stringify(this.body) &&
+                r.method === this.method
+        );
+
+        // console.log({ isRequesting });
+
+        const cached =
+            typeof this.options?.cached === 'boolean'
+                ? this.options.cached
+                : true;
+
+        // greater than 1 because "this" is one of them
+        if (isRequesting.length > 1 && cached) {
+            const [r] = isRequesting;
+            // warn('Currently requesting...');
+            const d = await r.promise;
+            return JSON.parse(JSON.stringify(d));
+        }
+
         this.promise = new Promise<T>((res, rej) => {
             try {
                 JSON.stringify(this.body);
@@ -484,16 +787,19 @@ export class ServerRequest<T = unknown> {
             this.sent = true;
 
             if (this.options?.cached) {
-                const reqs = ServerRequest.all.filter((r) => r.url == this.url);
+                const reqs = ServerRequest.all.filter(r => r.url == this.url);
                 const req = reqs[reqs.length - 1];
                 if (req) {
                     this.cached = true;
                     this.duration = Date.now() - start;
                     this.response = req.response as T;
-                    req.promise?.then((r) => res(r as T));
+                    req.promise?.then(r => res(r as T));
                 }
             }
 
+            const t = setTimeout(() => {
+                rej(new Error('Request timed out'));
+            }, 1000 * 10);
 
             fetch(this.url, {
                 method: this.method.toUpperCase(),
@@ -503,28 +809,52 @@ export class ServerRequest<T = unknown> {
                 },
                 body: JSON.stringify(this.body)
             })
-                .then((r) => r.json())
-                .then(async (data) => {
-                    if (this.cached) console.log(data, '(cached)'); 
-                    else console.log(data);
+                .then(async r => ({
+                    status: r.status,
+                    data: (await r.json()) as T
+                }))
+                .then(async ({ status, data }) => {
+                    clearTimeout(t);
+                    data = bigIntDecode(data);
 
-                    if (data?.status) {
-                        // this is a notification
-                        notify(data as StatusJson);
+                    if (!this.url.includes('socket')) {
+                        if (this.cached) log(data, '(cached)');
+                        else log(data);
                     }
-
+                    if ((data as StatusJson)?.$status) {
+                        // this is a notification
+                        const d = data as StatusJson;
+                        notify(
+                            {
+                                title: d.title,
+                                message: d.message,
+                                status: d.$status,
+                                color: d.color
+                            },
+                            'alert'
+                        );
+                    }
 
                     this.duration = Date.now() - start;
                     this.response = data;
 
-                    if (data?.redirect) {
-                        if (typeof data.sleep !== 'number') data.sleep = 1000;
-                        await sleep(data.sleep);
-                        location.href = data.redirect;
+                    if ((data as StatusJson)?.redirect) {
+                        if (typeof (data as StatusJson).sleep !== 'number')
+                            (data as StatusJson).sleep = 1000;
+                        await sleep((data as StatusJson).sleep as number);
+                        location.href = (data as StatusJson).redirect as string;
                     }
+
+                    if (
+                        status.toString().startsWith('4') ||
+                        status.toString().startsWith('5')
+                    ) {
+                        throw new Error('Invalid request');
+                    }
+
                     res(data as T);
                 })
-                .catch((e) => {
+                .catch(e => {
                     this.duration = Date.now() - start;
                     this.error = new Error(e);
                     rej(e);
@@ -534,3 +864,5 @@ export class ServerRequest<T = unknown> {
         return this.promise;
     }
 }
+
+Object.assign(window, { ServerRequest });

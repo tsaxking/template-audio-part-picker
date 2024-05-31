@@ -1,185 +1,271 @@
-import { Server } from "https://deno.land/x/socket_io@0.2.0/mod.ts";
-import { __root } from "../../utilities/env.ts";
-import { Session } from "../sessions.ts";
-import { parseCookie } from "../../../shared/cookie.ts";
-import { FileUpload } from "../../middleware/stream.ts";
-
-type FileBody = {
-    $$files: FileUpload[]
-}
+import express from 'express';
+import { App } from './app';
+import { Session } from '../sessions';
+import { FileUpload } from '../../middleware/stream';
 
 /**
- * This class represents a request
- * @date 10/12/2023 - 3:02:56 PM
+ * Body type
+ * @date 3/8/2024 - 6:16:47 AM
+ *
+ * @typedef {B}
+ */
+type B = {
+    [key: string]: unknown;
+};
+
+/**
+ * Body with files
+ * @date 3/8/2024 - 6:16:47 AM
+ *
+ * @typedef {FileBody}
+ */
+type FileBody = B & {
+    $$files: FileUpload[];
+};
+
+/**
+ * Request body
+ * @date 3/8/2024 - 6:16:47 AM
+ *
+ * @export
+ * @typedef {ReqBody}
+ */
+export type ReqBody = B | FileBody;
+
+/**
+ * Request class
+ * @date 3/8/2024 - 6:16:47 AM
  *
  * @export
  * @class Req
  * @typedef {Req}
+ * @template [T=unknown]
  */
-export class Req<T = {
-    [key: string]: any
-}> {
+export class Req<T = unknown, s = unknown> {
     /**
-     * The cookie object
-     * @date 10/12/2023 - 3:02:56 PM
-     *
-     * @private
-     * @type {?{
-            [key: string]: string
-        }}
-     */
-    private _cookie?: {
-        [key: string]: string
-    };
-
-    /**
-     * All parameters as a Record<string, string>
-     * @date 10/12/2023 - 3:02:56 PM
+     * Start time
+     * @date 3/8/2024 - 6:16:47 AM
      *
      * @public
-     * @type {Record<string, string>}
-     */
-    public params: {
-        [key: string]: string | undefined
-    } = {};
-    /**
-     * The body of the request
-     * @date 10/12/2023 - 3:02:56 PM
-     *
+     * @readonly
      * @type {*}
      */
-    public body: T = {} as T;
+    public readonly start = Date.now();
     /**
-     * The url of the request (this includes the domain)
-     * @date 10/12/2023 - 3:02:56 PM
+     * Files
+     * @date 3/8/2024 - 6:16:47 AM
      *
-     * @readonly
-     * @type {string}
+     * @private
+     * @type {FileUpload[]}
      */
-    readonly url: string;
-    /**
-     * The method of the request (GET, POST, PUT, DELETE, etc.)
-     * @date 10/12/2023 - 3:02:55 PM
-     *
-     * @readonly
-     * @type {string}
-     */
-    readonly method: string;
-    /**
-     * The headers as a Headers object from Deno
-     * @date 10/12/2023 - 3:02:55 PM
-     *
-     * @readonly
-     * @type {Headers}
-     */
-    readonly headers: Headers;
-    /**
-     * The url without the domain
-     * @date 10/12/2023 - 3:02:55 PM
-     *
-     * @readonly
-     * @type {string}
-     */
-    readonly pathname: string;
-    /**
-     * If the request has a query (?key=value), this will be a URLSearchParams object
-     * @date 10/12/2023 - 3:02:55 PM
-     *
-     * @readonly
-     * @type {URLSearchParams}
-     */
-    readonly query: URLSearchParams;
-    /**
-     * The ip of the request
-     * @date 10/12/2023 - 3:02:55 PM
-     *
-     * @readonly
-     * @type {string}
-     */
-    readonly ip: string = 'localhost';
-    /**
-     * The approximate time the request was received
-     * @date 10/12/2023 - 3:02:55 PM
-     *
-     * @readonly
-     * @type {number}
-     */
-    readonly start: number = Date.now();
+    private $files: FileUpload[] = [];
 
     /**
      * Creates an instance of Req.
-     * @date 10/12/2023 - 3:02:55 PM
+     * @date 3/8/2024 - 6:16:47 AM
      *
      * @constructor
-     * @param {Request} req
-     * @param {Deno.ServeHandlerInfo} info
-     * @param {Server} io
+     * @param {App} app
+     * @param {express.Request} req
+     * @param {Session} session
      */
-    constructor(public readonly req: Request, info: Deno.ServeHandlerInfo, public readonly io: Server) {
-        this.url = req.url;
-        this.method = req.method;
-        this.headers = req.headers;
-        this.pathname = new URL(req.url, 'http://localhost').pathname;
-        this.query = new URL(req.url, 'http://localhost').searchParams;
-        this.ip = info.remoteAddr.hostname;
-    }
+    constructor(
+        public readonly app: App<unknown>,
+        public readonly req: express.Request,
+        public readonly session: Session<s>
+    ) {}
 
     /**
-     * The cookie object
-     * @date 10/12/2023 - 3:02:55 PM
+     * Params of the request
+     * @date 3/8/2024 - 6:16:46 AM
      *
+     * @public
      * @readonly
-     * @type {{
-            [key: string]: string
-        }}
+     * @type {*}
      */
-    get cookie(): {
-        [key: string]: string
-    } {
-        if (this._cookie) return this._cookie;
-
-        const c = parseCookie(this.headers.get('cookie') || '');
-        this._cookie = c;
-        return c;
-    }
-
-
-    /**
-     * Sets a cookie for the response
-     * @date 10/12/2023 - 3:02:55 PM
-     *
-     * @param {string} name
-     * @param {string} value
-     */
-    addCookie(name: string, value: string) {
-        this._cookie = {
-            ...this.cookie,
-            [name]: value
-        };
+    public get params() {
+        return this.req.params;
     }
 
     /**
-     * The session object
-     * @date 10/12/2023 - 3:02:55 PM
+     * Body of the request
+     * @date 3/8/2024 - 6:16:46 AM
      *
+     * @public
+     * @type {T}
+     */
+    public get body(): T {
+        return this.req.body;
+    }
+
+    /**
+     * Body of the request
+     * @date 3/8/2024 - 6:16:46 AM
+     *
+     * @public
+     * @type {T}
+     */
+    public set body(value: T) {
+        this.req.body = value;
+    }
+
+    /**
+     * URL of the request (ex: /api/v1/users/1)
+     * @date 3/8/2024 - 6:16:46 AM
+     *
+     * @public
      * @readonly
-     * @type {Session}
+     * @type {*}
      */
-    get session(): Session {
-        const s = Session.get(this.cookie.ssid);
-        if (!s) throw new Error('No session found for req');
-        return s;
+    public get url() {
+        return this.req.url;
     }
 
     /**
-     * The files object (only available if used with the stream middleware)
-     * @date 10/12/2023 - 3:02:55 PM
+     * Headers of the request as a map
+     * @date 3/8/2024 - 6:16:46 AM
      *
+     * @public
      * @readonly
-     * @type {FileUpload[]}
+     * @type {*}
      */
-    get files(): FileUpload[] {
-        if (!(this.body as FileBody).$$files) (this.body as FileBody).$$files = [];
-        return (this.body as FileBody).$$files;
+    public get headers() {
+        const map = new Map<string, string>();
+        if (!this.req.headers) return map;
+        for (const key in this.req.headers) {
+            map.set(key, this.req.headers[key] as string);
+        }
+
+        return map;
     }
-};
+
+    /**
+     * Method of the request (ex: GET, POST, PUT, DELETE)
+     * @date 3/8/2024 - 6:16:46 AM
+     *
+     * @public
+     * @readonly
+     * @type {*}
+     */
+    public get method() {
+        return this.req.method;
+    }
+
+    /**
+     * Cookies of the request as a map
+     * @date 3/8/2024 - 6:16:46 AM
+     *
+     * @public
+     * @readonly
+     * @type {*}
+     */
+    public get cookie() {
+        return this.req.cookies ? this.req.cookies : {};
+    }
+
+    /**
+     * Query of the request as a map (ex: ?name=John&age=30)
+     * @date 3/8/2024 - 6:16:46 AM
+     *
+     * @public
+     * @readonly
+     * @type {*}
+     */
+    public get query() {
+        return this.req.query;
+    }
+
+    /**
+     * IP of the request
+     * @date 3/8/2024 - 6:16:46 AM
+     *
+     * @public
+     * @readonly
+     * @type {*}
+     */
+    public get ip() {
+        return this.req.ip;
+    }
+
+    /**
+     * Original URL of the request (ex: /api/v1/users/1?name=John&age=30)
+     * @date 3/8/2024 - 6:16:46 AM
+     *
+     * @public
+     * @readonly
+     * @type {*}
+     */
+    public get originalUrl() {
+        return this.req.originalUrl;
+    }
+
+    /**
+     * Path of the request (ex: /api/v1/users/1)
+     * @date 3/8/2024 - 6:16:46 AM
+     *
+     * @public
+     * @readonly
+     * @type {*}
+     */
+    public get pathname() {
+        return this.req.path;
+    }
+
+    /**
+     * Protocol of the request (ex: http, https)
+     * @date 3/8/2024 - 6:16:46 AM
+     *
+     * @public
+     * @readonly
+     * @type {*}
+     */
+    public get protocol() {
+        return this.req.protocol;
+    }
+
+    /**
+     * Is the request secure (https)
+     * @date 3/8/2024 - 6:16:46 AM
+     *
+     * @public
+     * @readonly
+     * @type {*}
+     */
+    public get secure() {
+        return this.req.secure;
+    }
+
+    /**
+     * Socket.io instance
+     * @date 3/8/2024 - 6:16:46 AM
+     *
+     * @public
+     * @readonly
+     * @type {SocketWrapper}
+     */
+    public get io() {
+        return this.app.io;
+    }
+
+    /**
+     * Files of the request
+     * @date 3/8/2024 - 6:16:46 AM
+     *
+     * @public
+     * @type {{}}
+     */
+    public get files() {
+        return this.$files;
+    }
+
+    /**
+     * Files of the request
+     * @date 3/8/2024 - 6:16:46 AM
+     *
+     * @public
+     * @type {{}}
+     */
+    public set files(files: FileUpload[]) {
+        this.$files = files;
+    }
+}
