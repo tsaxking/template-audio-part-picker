@@ -1,401 +1,625 @@
-import path from 'node:path';
-import callsite from 'npm:callsite';
-import * as htmlConstructor from 'npm:node-html-constructor';
-import ObjectsToCsv from 'npm:objects-to-csv';
-import { log as terminalLog } from "./terminal-logging.ts";
-import { __root, __uploads, __logs, __templates } from "./env.ts";
-import fs from 'node:fs';
-
-const render = htmlConstructor.v4;
+import render from 'node-html-constructor/versions/v4';
+import ObjectsToCsv from 'objects-to-csv';
+import env, { __logs, __root, __templates, __uploads } from './env';
+import { attempt, attemptAsync, Result } from '../../shared/check';
+import { matchInstance } from '../../shared/match';
+import { error } from './terminal-logging';
+import fs from 'fs';
+import path from 'path';
+import callsite from 'callsite';
 
 /**
- * Description placeholder
- * @date 10/12/2023 - 3:24:47 PM
+ * Error types for json operations
+ * @date 3/8/2024 - 5:50:09 AM
+ *
+ * @export
+ * @typedef {JSONError}
+ */
+export type JSONError = 'InvalidJSON' | 'Unknown';
+/**
+ * Error types for file operations
+ * @date 3/8/2024 - 5:50:09 AM
+ *
+ * @export
+ * @typedef {FileError}
+ */
+export type FileError = 'NoFile' | 'FileExists' | 'NoAccess' | 'Unknown';
+
+/**
+ * Matches an error to a JSONError
+ * @date 3/8/2024 - 5:50:09 AM
+ *
+ * @param {Error} e
+ * @returns {JSONError}
+ */
+const matchJSONError = (e: Error): JSONError => {
+    console.log(e);
+    return (
+        matchInstance<Error, JSONError>(
+            e,
+            [SyntaxError, () => 'InvalidJSON'],
+            [Error, () => 'Unknown']
+        ) ?? 'Unknown'
+    );
+};
+
+/**
+ * Matches an error to a FileError
+ * @date 3/8/2024 - 5:50:09 AM
+ *
+ * @param {Error} e
+ * @returns {FileError}
+ */
+const matchFileError = (e: Error): FileError => {
+    console.log(e);
+    return (
+        matchInstance<Error, FileError>(
+            e,
+            [Error, () => 'Unknown'],
+            [TypeError, () => 'NoFile'],
+            [Error, () => 'FileExists'],
+            [Error, () => 'NoAccess']
+        ) ?? 'Unknown'
+    );
+};
+
+/**
+ * Makes a folder
+ * @date 3/8/2024 - 5:50:09 AM
+ *
+ * @param {string} folder
  */
 const makeFolder = (folder: string) => {
-    const dirs = folder.split('/');
-
-    let mainDir = '';
-
-    for (const dir of dirs) {
-        if (dir.includes('.')) continue;
-
-        mainDir = path.resolve(mainDir, dir);
-        if (!fs.existsSync(mainDir)) {
-            fs.mkdirSync(mainDir);
-        }
-    }
+    return attempt(() => {
+        return fs.mkdirSync(folder, { recursive: true });
+    });
 };
 
-
 /**
- * Description placeholder
- * @date 10/12/2023 - 3:24:47 PM
- */
-const filePathBuilder = (file: string, ext: string, parentFolder: string) => {
-    let output: string;
-    if (!file.endsWith(ext)) file += ext;
-
-    if (file.startsWith('.')) {
-        // use callsite
-        const stack = callsite(),
-            requester = stack[2].getFileName(),
-            requesterDir = path.dirname(requester);
-        output = path.resolve(requesterDir.replace('file:/',''), file);
-    } else {
-        output = path.resolve(__root, parentFolder, ...file.split('/'));
-    }
-
-
-    return output;
-}
-
-/**
- * Description placeholder
- * @date 10/12/2023 - 3:24:47 PM
- */
-const removeComments = (content: string) => {
-    // remove all /* */ comments
-    content = content.replace(/\/\*[\s\S]*?\*\//g, '');
-
-    // remove all // comments
-    content = content.replace(/\/\/ .*/g, '');
-
-    return content;
-}
-
-
-
-/**
- * Description placeholder
- * @date 10/12/2023 - 3:24:47 PM
+ * Builds a file path based on the file, extension, and directory
+ * @date 3/8/2024 - 5:50:09 AM
  *
- * @export
- * @template [type=unknown]
  * @param {string} file
- * @returns {type}
- */
-export function getJSONSync<type = unknown>(file: string): type {
-    const filePath = filePathBuilder(file, '.json', './storage/jsons/');
-    const data = Deno.readFileSync(filePath);
-    const decoder = new TextDecoder();
-    const decoded = decoder.decode(data);
-
-    const parsed = JSON.parse(removeComments(decoded));
-    return parsed as type;
-}
-
-
-/**
- * Description placeholder
- * @date 10/12/2023 - 3:24:47 PM
- *
- * @export
- * @template [type=unknown]
- * @param {string} file
- * @returns {Promise<type>}
- */
-export function getJSON<type = unknown>(file: string): Promise<type> {
-    return new Promise<type>((res, rej) => {
-        const filePath = filePathBuilder(file, '.json', './storage/jsons/');
-        Deno.readFile(filePath)
-            .then(data => {
-                const decoder = new TextDecoder();
-                const decoded = decoder.decode(data);
-
-                const parsed = JSON.parse(removeComments(decoded));
-                res(parsed as type);
-            })
-            .catch(rej);
-    });
-}
-
-export function JSONPath (file: string): string {
-    return filePathBuilder(file, '.json', './storage/jsons/');
-}
-
-/**
- * Description placeholder
- * @date 10/12/2023 - 3:24:47 PM
- *
- * @export
- * @param {string} file
- * @param {*} data
- */
-export function saveJSONSync(file: string, data: any) {
-    const p = filePathBuilder(file, '.json', './storage/jsons/');
-
-    try {
-        data = JSON.stringify(data, null, 4);
-    } catch {
-        throw new Error('Invalid JSON');
-    }
-
-    Deno.writeFileSync(p, data);
-}
-
-/**
- * Description placeholder
- * @date 10/12/2023 - 3:24:47 PM
- *
- * @export
- * @param {string} file
- * @param {*} data
- * @returns {*}
- */
-export function saveJSON(file: string, data: any) {
-    return new Promise<void>((res, rej) => {
-        const p = filePathBuilder(file, '.json', './storage/jsons/');
-
-        try {
-            data = JSON.stringify(data, null, 4);
-        } catch {
-            rej(new Error('Invalid JSON'));
-        }
-
-        Deno.writeFile(p, data)
-            .then(res)
-            .catch(rej);
-    });
-}
-
-
-/**
- * Description placeholder
- * @date 10/12/2023 - 3:24:47 PM
- *
- * @export
- * @param {string} file
- * @param {?{ [key: string]: any }} [options]
+ * @param {string} ext
+ * @param {string} dir
  * @returns {string}
  */
-export function getTemplateSync(file: string, options?: { [key: string]: any }): string {
-    const p = filePathBuilder(file, '.html', './public/templates/');
-
-    const data = Deno.readFileSync(p);
-    const decoder = new TextDecoder();
-
-    return options ? render(decoder.decode(data), options) : decoder.decode(data);
-}
-
-/**
- * Description placeholder
- * @date 10/12/2023 - 3:24:47 PM
- *
- * @export
- * @param {string} file
- * @param {?{ [key: string]: any }} [options]
- * @returns {Promise<string>}
- */
-export function getTemplate(file: string, options?: { [key: string]: any }): Promise<string> {
-    return new Promise<string>((res, rej) => {
-        const p = filePathBuilder(file, '.html', './public/templates/');
-
-        Deno.readFile(p)
-            .then(data => {
-                const decoder = new TextDecoder();
-                const decoded = decoder.decode(data);
-
-                res(options ? render(decoded, options) : decoded);
-            })
-            .catch(rej);
-    });
-}
-
-/**
- * Description placeholder
- * @date 10/12/2023 - 3:24:47 PM
- *
- * @export
- * @param {string} file
- * @param {string} data
- * @returns {*}
- */
-export function saveTemplateSync(file: string, data: string) {
-    const p = filePathBuilder(file, '.html', './public/templates/');
-
-    makeFolder(path.relative(__templates, p));
-
-    return Deno.writeFileSync(p, new TextEncoder().encode(data));
-}
-
-/**
- * Description placeholder
- * @date 10/12/2023 - 3:24:47 PM
- *
- * @export
- * @param {string} file
- * @param {string} data
- * @returns {*}
- */
-export function saveTemplate(file: string, data: string) {
-    const p = filePathBuilder(file, '.html', './public/templates/');
-
-    makeFolder(path.relative(__templates, p));
-
-    return Deno.writeFile(p, new TextEncoder().encode(data));
-}
-
-
-
-/**
- * Description placeholder
- * @date 10/12/2023 - 3:24:47 PM
- */
-export const createUploadsFolder = () => {
-    if (!fs.existsSync(__uploads)) {
-        terminalLog('Creating uploads folder');
-        fs.mkdirSync(__uploads);
+const filePathBuilder = (file: string, ext: string, dir: string) => {
+    let output: string;
+    // console.log(file, ext, dir);
+    if (!file.endsWith(ext)) {
+        file += ext;
     }
+
+    if (file.startsWith('.')) {
+        const stack = callsite(),
+            caller = stack[2].getFileName(),
+            requesterDir = path.dirname(caller);
+        output = path.resolve(__root, requesterDir, file);
+    } else {
+        output = path.resolve(__root, dir, file);
+    }
+    // console.log({ output });
+
+    return output;
 };
 
 /**
- * Description placeholder
- * @date 10/12/2023 - 3:24:47 PM
+ * Removes comments from a string (js, css, html)
+ * @date 3/8/2024 - 5:50:09 AM
+ *
+ * @param {string} content
+ * @returns {*}
  */
-export const createLogsFolder = () => {
-    if (!fs.existsSync(__logs)) {
-        terminalLog('Creating logs folder');
-        fs.mkdirSync(__logs);
-    }
-}
-
-
-
-
+const removeComments = (content: string) => {
+    return content
+        .replace(/\/\*[\s\S]*?\*\//g, '') // multi line comments (js & css)
+        .replace(/\/\/ .*/g, '') // single line comments (js)
+        .replace(/<!--[\s\S]*?-->/g, ''); // html comments (html)
+};
 
 /**
- * Description placeholder
- * @date 10/12/2023 - 3:24:47 PM
+ * Returns the content of a json file as an object, if there is an error it returns a Err<JSONError>
+ * @date 3/8/2024 - 5:50:09 AM
+ *
+ * @template [T=unknown]
+ * @param {string} file
+ * @returns {Result<T, JSONError>}
+ */
+export const getJSONSync = <T = unknown>(
+    file: string
+): Result<T, JSONError> => {
+    return attempt(() => {
+        const filePath = filePathBuilder(file, '.json', './storage/jsons');
+        const data = fs.readFileSync(filePath, 'utf-8');
+        return JSON.parse(removeComments(data)) as T;
+    }, matchJSONError);
+};
+
+/**
+ * Returns the content of a json file as an object, if there is an error it returns a Promise<Err<JSONError>>
+ * @date 3/8/2024 - 5:50:09 AM
+ *
+ * @template [T=unknown]
+ * @param {string} file
+ * @returns {Promise<Result<T, JSONError>>}
+ */
+export const getJSON = <T = unknown>(
+    file: string
+): Promise<Result<T, JSONError>> => {
+    return attemptAsync(async () => {
+        const filePath = filePathBuilder(file, '.json', './storage/jsons');
+        const data = await fs.promises.readFile(filePath, 'utf-8');
+        return JSON.parse(removeComments(data)) as T;
+    }, matchJSONError);
+};
+
+/**
+ * Saves data to a json file, if there is an error it returns a Err<JSONError>
+ * @date 3/8/2024 - 5:50:09 AM
+ *
+ * @template [T=unknown]
+ * @param {string} file
+ * @param {T} data
+ * @returns {Result<void, JSONError>}
+ */
+export const saveJSONSync = <T = unknown>(
+    file: string,
+    data: T
+): Result<void, JSONError> => {
+    return attempt(() => {
+        const filePath = filePathBuilder(file, '.json', './storage/jsons');
+        makeFolder(path.dirname(filePath));
+        fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+    }, matchJSONError);
+};
+
+/**
+ * Saves data to a json file, if there is an error it returns a Promise<Err<JSONError>>
+ * @date 3/8/2024 - 5:50:09 AM
+ *
+ * @template [T=unknown]
+ * @param {string} file
+ * @param {T} data
+ * @returns {Promise<Result<void, JSONError>>}
+ */
+export const saveJSON = <T = unknown>(
+    file: string,
+    data: T
+): Promise<Result<void, JSONError>> => {
+    return attemptAsync(async () => {
+        const filePath = filePathBuilder(file, '.json', './storage/jsons');
+        makeFolder(path.dirname(filePath));
+        await fs.promises.writeFile(filePath, JSON.stringify(data, null, 2));
+    }, matchJSONError);
+};
+
+/**
+ * Removes a json file, if there is an error it returns a Err<JSONError>
+ * @date 3/8/2024 - 5:50:09 AM
+ *
+ * @param {string} file
+ * @returns {Result<void, JSONError>}
+ */
+export const removeJSONSync = (file: string): Result<void, JSONError> => {
+    return attempt(() => {
+        const filePath = filePathBuilder(file, '.json', './storage/jsons');
+        fs.rmSync(filePath);
+    }, matchJSONError);
+};
+
+/**
+ * Removes a json file, if there is an error it returns a Promise<Err<JSONError>>
+ * @date 3/8/2024 - 5:50:09 AM
+ *
+ * @param {string} file
+ * @returns {Promise<Result<void, JSONError>>}
+ */
+export const removeJSON = (file: string): Promise<Result<void, JSONError>> => {
+    return attemptAsync(async () => {
+        const filePath = filePathBuilder(file, '.json', './storage/jsons');
+        await fs.promises.rm(filePath);
+    }, matchJSONError);
+};
+
+/**
+ * Constructor type for rendering templates
+ * @date 3/8/2024 - 5:50:09 AM
  *
  * @export
+ * @typedef {Constructor}
+ */
+export type Constructor = {
+    [key: string]:
+        | string
+        | number
+        | boolean
+        | undefined
+        | Constructor[]
+        | Constructor;
+};
+
+/**
+ * Returns the content of an html file as a string, applying node-html-constructor to it, if there is an error it returns a Err<FileError>
+ * @date 3/8/2024 - 5:50:09 AM
+ *
+ * @param {string} file
+ * @param {?Constructor} [options]
+ * @returns {Result<string, FileError>}
+ */
+export const getTemplateSync = (
+    file: string,
+    options?: Constructor
+): Result<string, FileError> => {
+    return attempt(() => {
+        const p = filePathBuilder(file, '.html', './public/templates');
+        const data = fs.readFileSync(p, 'utf-8');
+
+        return removeComments(options ? render(data, options) : data);
+    }, matchFileError);
+};
+
+/**
+ * Returns the content of an html file as a string, applying node-html-constructor to it, if there is an error it returns a Promise<Err<FileError>>
+ * @date 3/8/2024 - 5:50:09 AM
+ *
+ * @param {string} file
+ * @param {?Constructor} [options]
+ * @returns {Promise<Result<string, FileError>>}
+ */
+export const getTemplate = (
+    file: string,
+    options?: Constructor
+): Promise<Result<string, FileError>> => {
+    return attemptAsync(async () => {
+        const p = filePathBuilder(file, '.html', './public/templates');
+        const data = await fs.promises.readFile(p, 'utf-8');
+
+        return removeComments(options ? render(data, options) : data);
+    }, matchFileError);
+};
+
+/**
+ * Saves data to a html file, if there is an error it returns a Err<FileError>
+ * @date 3/8/2024 - 5:50:09 AM
+ *
+ * @param {string} file
+ * @param {string} data
+ * @returns {Result<void, FileError>}
+ */
+export const saveTemplateSync = (
+    file: string,
+    data: string
+): Result<void, FileError> => {
+    return attempt(() => {
+        const p = filePathBuilder(file, '.html', './public/templates');
+        makeFolder(path.dirname(p));
+        fs.writeFileSync(p, data);
+    }, matchFileError);
+};
+
+/**
+ * Saves data to a html file, if there is an error it returns a Promise<Err<FileError>>
+ * @date 3/8/2024 - 5:50:09 AM
+ *
+ * @param {string} file
+ * @param {string} data
+ * @returns {Promise<Result<void, FileError>>}
+ */
+export const saveTemplate = (
+    file: string,
+    data: string
+): Promise<Result<void, FileError>> => {
+    return attemptAsync(async () => {
+        const p = filePathBuilder(file, '.html', './public/templates');
+        makeFolder(path.dirname(p));
+        await fs.promises.writeFile(p, data);
+    }, matchFileError);
+};
+
+/**
+ * Removes a html file, if there is an error it returns a Err<FileError>
+ * @date 3/8/2024 - 5:50:08 AM
+ *
+ * @param {string} file
+ * @returns {Result<void, FileError>}
+ */
+export const removeTemplateSync = (file: string): Result<void, FileError> => {
+    return attempt(() => {
+        const p = filePathBuilder(file, '.html', './public/templates');
+        fs.rmSync(p);
+    }, matchFileError);
+};
+
+/**
+ * Removes a html file, if there is an error it returns a Promise<Err<FileError>>
+ * @date 3/8/2024 - 5:50:08 AM
+ *
+ * @param {string} file
+ * @returns {Promise<Result<void, FileError>>}
+ */
+export const removeTemplate = (
+    file: string
+): Promise<Result<void, FileError>> => {
+    return attemptAsync(async () => {
+        const p = filePathBuilder(file, '.html', './public/templates');
+        await fs.promises.rm(p);
+    }, matchFileError);
+};
+
+/**
+ *  Creates the uploads folder
+ * @date 3/8/2024 - 5:50:08 AM
+ */
+export const createUploadsFolder = () => makeFolder(__uploads);
+/**
+ * Creates the logs folder
+ * @date 3/8/2024 - 5:50:08 AM
+ */
+export const createLogsFolder = () => makeFolder(__logs);
+
+/**
+ * Saves uploaded files to the uploads folder
+ * @date 3/8/2024 - 5:50:08 AM
+ *
  * @param {string} filename
  * @param {Uint8Array} data
- * @returns {*}
+ * @returns {Promise<Result<void, FileError>>}
  */
-export function saveUpload(filename: string, data: Uint8Array) {
-    createUploadsFolder();
-    const p = filePathBuilder(filename, '', __uploads);
-
-    return Deno.writeFile(p, data);
-}
+export const saveUpload = (
+    filename: string,
+    data: Uint8Array
+): Promise<Result<void, FileError>> => {
+    return attemptAsync(async () => {
+        const p = path.resolve(__uploads, filename);
+        makeFolder(path.dirname(p));
+        await fs.promises.writeFile(p, data);
+    }, matchFileError);
+};
 
 /**
- * Description placeholder
- * @date 10/12/2023 - 3:24:47 PM
+ * Saves uploaded files to the uploads folder
+ * @date 3/8/2024 - 5:50:08 AM
  *
- * @export
  * @param {string} filename
- * @returns {*}
+ * @param {Uint8Array} data
+ * @returns {Result<void, FileError>}
  */
-export function getUpload(filename: string) {
-    createUploadsFolder();
-    const p = filePathBuilder(filename, '', __uploads);
-    try {
-        return Deno.readFile(p);
-    } catch {
-        terminalLog('error', `Could not delete file ${filename} because it likely does not exist`);
-    }
-}
-
+export const saveUploadSync = (
+    filename: string,
+    data: Uint8Array
+): Result<void, FileError> => {
+    return attempt(() => {
+        const p = path.resolve(__uploads, filename);
+        makeFolder(path.dirname(p));
+        fs.writeFileSync(p, data);
+    }, matchFileError);
+};
 
 /**
- * Description placeholder
- * @date 10/12/2023 - 3:24:47 PM
+ * Removes an uploaded file from the uploads folder
+ * @date 3/8/2024 - 5:50:08 AM
  *
- * @export
  * @param {string} filename
- * @returns {*}
+ * @returns {Promise<Result<void, FileError>>}
  */
-export function getUploadSync(filename: string) {
-    createUploadsFolder();
-    const p = filePathBuilder(filename, '', __uploads);
-    try {
-        return Deno.readFileSync(p);
-    } catch {
-        terminalLog('error', `Could not delete file ${filename} because it likely does not exist`);
-    }
-}
+export const removeUpload = (
+    filename: string
+): Promise<Result<void, FileError>> => {
+    return attemptAsync(async () => {
+        const p = path.resolve(__uploads, filename);
+        await fs.promises.rm(p);
+    }, matchFileError);
+};
 
 /**
- * Description placeholder
- * @date 10/12/2023 - 3:24:47 PM
+ * Removes an uploaded file from the uploads folder
+ * @date 3/8/2024 - 5:50:08 AM
  *
- * @export
  * @param {string} filename
- * @returns {*}
+ * @returns {Result<void, FileError>}
  */
-export function deleteUpload(filename: string) {
-    createUploadsFolder();
-    const p = filePathBuilder(filename, '', __uploads);
-    try {
-        return Deno.remove(p);
-    } catch {
-        terminalLog('error', `Could not delete file ${filename} because it likely does not exist`);
-    }
-}
-
+export const removeUploadSync = (filename: string): Result<void, FileError> => {
+    return attempt(() => {
+        const p = path.resolve(__uploads, filename);
+        fs.rmSync(p);
+    }, matchFileError);
+};
 
 /**
- * Description placeholder
- * @date 10/12/2023 - 3:24:47 PM
+ * Returns the content of an uploaded file as a Uint8Array, if there is an error it returns a Err<FileError>
+ * @date 3/8/2024 - 5:50:08 AM
  *
- * @typedef {Bytes}
+ * @param {string} filename
+ * @returns {Promise<Result<Uint8Array, FileError>>}
  */
-type Bytes = 'Bytes' | 'KB' | 'MB' | 'GB' | 'TB' | 'PB' | 'EB' | 'ZB' | 'YB';
+export const getUpload = (
+    filename: string
+): Promise<Result<Uint8Array, FileError>> => {
+    return attemptAsync(async () => {
+        const p = path.resolve(__uploads, filename);
+        return await fs.promises.readFile(p);
+    }, matchFileError);
+};
 
 /**
- * Description placeholder
- * @date 10/12/2023 - 3:24:47 PM
+ * Returns the content of an uploaded file as a Uint8Array, if there is an error it returns a Err<FileError>
+ * @date 3/8/2024 - 5:50:08 AM
  *
- * @export
- * @param {number} bytes
- * @param {number} [decimals=2]
- * @returns {{ string: string, type: Bytes }}
+ * @param {string} filename
+ * @returns {Result<Uint8Array, FileError>}
  */
-export function formatBytes(bytes: number, decimals: number = 2): { string: string, type: Bytes } {
-    if (bytes === 0) return {
-        string: '0 Bytes',
-        type: 'Bytes'
-    };
-
-    const k = 1024;
-    const dm = decimals < 0 ? 0 : decimals;
-    const sizes: Bytes[] = ['Bytes', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB'];
-
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-
-    return {
-        string: parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i],
-        type: sizes[i]
-    }
-}
-
+export const getUploadSync = (
+    filename: string
+): Result<Uint8Array, FileError> => {
+    return attempt(() => {
+        const p = path.resolve(__uploads, filename);
+        return fs.readFileSync(p);
+    }, matchFileError);
+};
 
 /**
- * Description placeholder
+ * Returns the content of a file as a string, if there is an error it returns a Err<FileError>
+ * @date 3/8/2024 - 5:50:08 AM
+ *
+ * @param {string} file
+ * @returns {Result<string, FileError>}
+ */
+export const readFileSync = (file: string): Result<string, FileError> => {
+    return attempt(() => {
+        const p = path.resolve(__root, file);
+        return fs.readFileSync(p, 'utf-8');
+    }, matchFileError);
+};
+
+/**
+ * Returns the content of a file as a string, if there is an error it returns a Promise<Err<FileError>>
+ * @date 3/8/2024 - 5:50:08 AM
+ *
+ * @param {string} file
+ * @returns {Promise<Result<string, FileError>>}
+ */
+export const readFile = (file: string): Promise<Result<string, FileError>> => {
+    return attemptAsync(async () => {
+        const p = path.resolve(__root, file);
+        return await fs.promises.readFile(p, 'utf-8');
+    }, matchFileError);
+};
+
+/**
+ * Saves data to a file, if there is an error it returns a Err<FileError>
+ * @date 3/8/2024 - 5:50:08 AM
+ *
+ * @param {string} file
+ * @param {(string | ArrayBuffer)} data
+ * @returns {Promise<Result<void, FileError>>}
+ */
+export const saveFile = (
+    file: string,
+    data: string | ArrayBuffer
+): Promise<Result<void, FileError>> => {
+    return attemptAsync(async () => {
+        const p = path.resolve(__root, file);
+        makeFolder(path.dirname(p));
+        await fs.promises.writeFile(
+            p,
+            data instanceof ArrayBuffer ? new Uint8Array(data) : data
+        );
+    }, matchFileError);
+};
+
+/**
+ * Saves data to a file, if there is an error it returns a Err<FileError>
+ * @date 3/8/2024 - 5:50:08 AM
+ *
+ * @param {string} file
+ * @param {string} data
+ * @returns {Result<void, FileError>}
+ */
+export const saveFileSync = (
+    file: string,
+    data: string
+): Result<void, FileError> => {
+    return attempt(() => {
+        const p = path.resolve(__root, file);
+        makeFolder(path.dirname(p));
+        fs.writeFileSync(p, data);
+    }, matchFileError);
+};
+
+/**
+ * Removes a file, if there is an error it returns a Err<FileError>
+ * @date 3/8/2024 - 5:50:08 AM
+ *
+ * @param {string} file
+ * @returns {Promise<Result<void, FileError>>}
+ */
+export const removeFile = (file: string): Promise<Result<void, FileError>> => {
+    return attemptAsync(async () => {
+        const p = path.resolve(__root, file);
+        await fs.promises.rm(p);
+    }, matchFileError);
+};
+
+/**
+ * Removes a file, if there is an error it returns a Err<FileError>
+ * @date 3/8/2024 - 5:50:08 AM
+ *
+ * @param {string} file
+ * @returns {Result<void, FileError>}
+ */
+export const removeFileSync = (file: string): Result<void, FileError> => {
+    return attempt(() => {
+        const p = path.resolve(__root, file);
+        fs.rmSync(p);
+    }, matchFileError);
+};
+
+/**
+ * Reads the contents of a directory, if there is an error it returns a Err<FileError>
+ * @date 3/8/2024 - 5:50:08 AM
+ *
+ * @param {string} dir
+ * @returns {Promise<Result<string[], FileError>>}
+ */
+export const readDir = (dir: string): Promise<Result<string[], FileError>> => {
+    return attemptAsync(() => {
+        return fs.promises.readdir(path.resolve(__root, dir));
+    }, matchFileError);
+};
+
+/**
+ * Reads the contents of a directory, if there is an error it returns a Err<FileError>
+ * @date 3/8/2024 - 5:50:08 AM
+ *
+ * @param {string} dir
+ * @returns {Result<string[], FileError>}
+ */
+export const readDirSync = (dir: string): Result<string[], FileError> => {
+    return attempt(() => {
+        return fs.readdirSync(path.resolve(__root, dir));
+    }, matchFileError);
+};
+
+/**
+ * Checks if a file exists
+ * @date 3/8/2024 - 5:50:08 AM
+ *
+ * @param {string} file
+ * @returns {boolean}
+ */
+export const exists = (file: string): boolean => {
+    return fs.existsSync(path.resolve(__root, file));
+};
+
+/**
+ * Types of logs
  * @date 10/12/2023 - 3:24:47 PM
  *
  * @export
  * @typedef {LogType}
  */
-export type LogType = 'request' | 'error' | 'debugger' | 'status';
+export type LogType =
+    | 'request'
+    | 'error'
+    | 'debugger'
+    | 'status'
+    | 'console'
+    | 'queries';
 
 /**
- * Description placeholder
+ * The allowed types of data in a log (prevents deep objects)
  * @date 10/12/2023 - 3:24:47 PM
  *
  * @export
  * @typedef {LogObj}
  */
 export type LogObj = {
-    [key: string]: string|number|boolean|undefined|null;
-}
-
-
+    [key: string]: string | number | boolean | undefined | null;
+};
 
 /**
- * Description placeholder
+ * Logs data to a csv file
  * @date 10/12/2023 - 3:24:47 PM
  *
  * @export
@@ -403,10 +627,45 @@ export type LogObj = {
  * @param {LogObj} dataObj
  * @returns {*}
  */
-export function log(type: LogType, dataObj: LogObj) {
-    createLogsFolder();
-    return new ObjectsToCsv([dataObj]).toDisk(
-        path.resolve(__logs, `${type}.csv`),
-        { append: true }
+export function log(type: LogType, dataObj: LogObj): Promise<Result<void>> {
+    return attemptAsync(async () => {
+        createLogsFolder();
+        new ObjectsToCsv([dataObj]).toDisk(
+            path.resolve(__logs, `${type}.csv`),
+            { append: true }
+        );
+    });
+}
+
+{
+    setInterval(
+        () => {
+            fs.readdir(__logs, (err, files) => {
+                if (err) {
+                    error(err);
+                    return;
+                }
+                files.forEach(file => {
+                    fs.stat(path.resolve(__logs, file), (err, stats) => {
+                        if (err) {
+                            error(err);
+                            return;
+                        }
+                        if (
+                            Date.now() - stats.mtimeMs >
+                            Number(env.LOG_CLEAR_TIMEOUT)
+                        ) {
+                            fs.rm(path.resolve(__logs, file), err => {
+                                if (err) {
+                                    error(err);
+                                    return;
+                                }
+                            });
+                        }
+                    });
+                });
+            });
+        },
+        Number(env.LOG_CLEAR_TIMEOUT) || 1000 * 60 * 60 * 24
     );
 }

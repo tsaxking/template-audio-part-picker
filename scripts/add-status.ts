@@ -1,20 +1,34 @@
-import { validCodes } from "../shared/status.ts";
-import { messages, StatusCode, StatusColor, StatusId } from "../shared/status-messages.ts";
-import { Colors } from "../server/utilities/colors.ts";
-import { capitalize, fromSnakeCase, toCamelCase } from "../shared/text.ts";
-import Filter from 'npm:bad-words';
-import { repeatPrompt } from "./prompt.ts";
+import { validCodes } from '../shared/status';
+import {
+    messages,
+    StatusCode,
+    StatusColor,
+    StatusId
+} from '../shared/status-messages';
+import { Colors } from '../server/utilities/colors';
+import { capitalize, fromSnakeCase, toCamelCase } from '../shared/text';
+import Filter from 'bad-words';
+import { repeatPrompt, prompt } from './prompt';
+import fs from 'fs';
+import path from 'path';
 
-
-
+/**
+ * Adds a new socket event to the shared/socket.ts file
+ * @date 3/8/2024 - 6:46:42 AM
+ *
+ * @param {string} name
+ */
 export const addSocket = (name: string) => {
-    const file = Deno.readFileSync('./shared/socket.ts');
+    // const file = Deno.readFileSync('./shared/socket.ts');
+    const file = fs.readFileSync('./shared/socket.ts');
     const decoder = new TextDecoder();
     const decoded = decoder.decode(file);
 
     const [, end] = decoded.split('export type SocketEvent =');
 
-    let events = end.split('|').map(i => i.trim().replace(';', '').replace(/\n/g, ''));
+    let events = end
+        .split('|')
+        .map(i => i.trim().replace(';', '').replace(/\n/g, ''));
     events.push(`'${name}'`);
 
     events.sort((a, b) => {
@@ -36,9 +50,24 @@ export const addSocket = (name: string) => {
 
     const newFile = `export type SocketEvent = 
       ${events.join('\n\t| ')}\n;`;
-    Deno.writeFileSync('./shared/socket.ts', new TextEncoder().encode(newFile));
+    // Deno.writeFileSync('./shared/socket.ts', new TextEncoder().encode(newFile));
+    fs.writeFileSync('./shared/socket.ts', newFile);
 };
 
+/**
+ * Adds a new status to the shared/status-messages.ts file
+ * @date 3/8/2024 - 6:46:42 AM
+ *
+ * @param {{
+ *     group: string;
+ *     name: string;
+ *     message: string;
+ *     color: string;
+ *     code: StatusCode;
+ *     instructions: string;
+ *     redirect?: string;
+ * }} data
+ */
 export const addStatus = (data: {
     group: string;
     name: string;
@@ -46,52 +75,73 @@ export const addStatus = (data: {
     color: string;
     code: StatusCode;
     instructions: string;
+    redirect?: string;
 }) => {
-    const value = data.group + ':' + data.name as StatusId;
+    const value = (data.group + ':' + data.name) as StatusId;
     const obj = {
         message: data.message,
         color: data.color as StatusColor,
         code: data.code as StatusCode,
-        instructions: data.instructions
+        instructions: data.instructions,
+        redirect: data.redirect
     };
 
-    if (messages[value]) throw new Error(`Status ${Colors.FgGreen}${value}${Colors.Reset} already exists`);
+    if (messages[value]) {
+        throw new Error(
+            `Status ${Colors.FgGreen}${value}${Colors.Reset} already exists`
+        );
+    }
 
     messages[value] = obj;
 
-    const str: string = (Object.keys(messages).sort((a, b) => {
-        const [a1, a2] = a.split(':');
-        const [b1, b2] = b.split(':');
+    const str: string = (
+        Object.keys(messages).sort((a, b) => {
+            const [a1, a2] = a.split(':');
+            const [b1, b2] = b.split(':');
 
-        if (a1 === b1) {
-            return a2.localeCompare(b2);
-        }
+            if (a1 === b1) {
+                return a2.localeCompare(b2);
+            }
 
-        return a1.localeCompare(b1);
-    }) as StatusId []).map((key: StatusId) => {
-        return `    '${key}': {
-    message: '${messages[key].message.replace(/'/g, '\\\'')}',
+            return a1.localeCompare(b1);
+        }) as StatusId[]
+    )
+        .map((key: StatusId) => {
+            return `    '${key}': {
+    message: '${messages[key].message.replace(/'/g, "\\'")}',
     color: '${messages[key].color}',
     code: ${messages[key].code},
-    instructions: '${messages[key].instructions}'
+    instructions: '${messages[key].instructions}',${
+        messages[key].redirect
+            ? `\n    redirect: '${messages[key].redirect}'`
+            : ''
+    }
 }`;
-    }).join(',\n');
+        })
+        .join(',\n');
 
-    const groups = Object.keys(messages).reduce((acc, key) => {
-        if (!acc[key.split(':')[0]]) acc[key.split(':')[0]] = [];
-        acc[key.split(':')[0]].push(key.split(':')[1]);
-        return acc;
-    }, {
-    } as any);
+    const groups = Object.keys(messages).reduce(
+        (acc, key) => {
+            if (!acc[key.split(':')[0]]) acc[key.split(':')[0]] = [];
+            acc[key.split(':')[0]].push(key.split(':')[1]);
+            return acc;
+        },
+        {} as {
+            [key: string]: string[];
+        }
+    );
 
-
-    const file = Deno.readFileSync('./shared/status-messages.ts');
+    // const file = Deno.readFileSync('./shared/status-messages.ts');
+    const file = fs.readFileSync('./shared/status-messages.ts');
     const decoder = new TextDecoder();
     const decoded = decoder.decode(file);
 
     const [, end] = decoded.split('export type StatusId =');
 
-    let ids = end.split(';')[0].split('|').map(i => i.trim().replace(';', '').replace(/\n/g, ''));
+    let ids = end
+        .split(';')[0]
+        .split('|')
+        .map(i => i.trim().replace(';', '').replace(/\n/g, ''));
 
     ids.push(`'${value}'`);
 
@@ -124,52 +174,78 @@ ${str}
 
 export type StatusId = ${ids.join('\n\t| ')}\n;
 
-${Object.keys(groups).map(key => {
-        return `export type ${capitalize(toCamelCase(fromSnakeCase(key, '-')))}StatusId = ${groups[key].map((i: string) => `'${i}'`).join('\n\t| ')};`
-    }
-).join('\n\n\n')}
+${Object.keys(groups)
+    .map(key => {
+        return `export type ${capitalize(
+            toCamelCase(fromSnakeCase(key, '-'))
+        )}StatusId = ${groups[key]
+            .map((i: string) => `'${i}'`)
+            .join('\n\t| ')};`;
+    })
+    .join('\n\n\n')}
 `;
 
-    Deno.writeFileSync('./shared/status-messages.ts', new TextEncoder().encode(newFile));
+    // Deno.writeFileSync(
+    //     './shared/status-messages.ts',
+    //     new TextEncoder().encode(newFile),
+    // );
+    fs.writeFileSync('./shared/status-messages.ts', newFile);
 
     if (data.code.toString().startsWith('2')) {
         addSocket(value);
     }
 };
 
+/**
+ * Prompts the user for status information and adds a new status to the shared/status-messages.ts file
+ * @date 3/8/2024 - 6:46:42 AM
+ *
+ * @async
+ * @returns {*}
+ */
+export const addStatusPrompt = async () => {
+    const allowedCharacters =
+        'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_';
 
-export const addStatusPrompt = () => {
-    const allowedCharacters = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_';
-
-    const parse = (str: string) => str.trim().toLowerCase().split('').filter(i => allowedCharacters.includes(i)).join('');
+    const parse = (str: string, trim?: boolean) => {
+        if (trim) str = str.trim();
+        return str
+            .toLowerCase()
+            .split('')
+            .filter(i => allowedCharacters.includes(i))
+            .join('');
+    };
     const filter = (str: string): boolean => {
         if (str.length < 3) return false;
         const filter = new Filter();
         const filtered = filter.clean(str);
         if (filtered !== str) return false;
         return true;
-    }
+    };
 
-    const group = repeatPrompt('Status group', undefined, filter);
-    const name = repeatPrompt('Status name', undefined, filter);
-    const message = repeatPrompt('Status message', undefined, filter);
-    const color = repeatPrompt('Status color', undefined, (i) => ['success', 'danger', 'warning', 'info'].includes(i));
-    const code = repeatPrompt('Status code', undefined, (i) => validCodes.includes(+i as StatusCode));
-    const instructions = prompt('Status instructions:') || '';
+    const group = await repeatPrompt('Status group', undefined, filter);
+    const name = await repeatPrompt('Status name', undefined, filter);
+    const message = await repeatPrompt('Status message', undefined, filter);
+    const color = await repeatPrompt('Status color', undefined, i =>
+        ['success', 'danger', 'warning', 'info'].includes(i)
+    );
+    const code = await repeatPrompt('Status code', undefined, i =>
+        validCodes.includes(+i as StatusCode)
+    );
+    const instructions = (await prompt('Status instructions:')) || '';
+    const redirect = (await prompt('Redirect')) || undefined;
 
     addStatus({
-        group: parse(group),
-        name: parse(name),
+        group: parse(group, true),
+        name: parse(name, true),
         message: message,
         color,
         code: +code as StatusCode,
-        instructions: parse(instructions)
+        instructions: parse(instructions),
+        redirect
     });
 };
 
-
-if (Deno.args.includes('status')) addStatusPrompt();
-if (Deno.args.includes('socket')) {
-    const name = repeatPrompt('Socket event name');
-    addSocket(name);
-};
+if (require.main === module) {
+    addStatusPrompt();
+}

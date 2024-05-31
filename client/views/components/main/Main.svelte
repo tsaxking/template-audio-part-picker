@@ -1,57 +1,48 @@
 <script lang="ts">
-    import Offcanvas from './Offcanvas.svelte';
-    import Navbar from './Navbar.svelte';
-    import { createEventDispatcher } from 'svelte';
-    import { capitalize, fromSnakeCase } from '../../../../shared/text';
+import Offcanvas from './Offcanvas.svelte';
+import Navbar from './Navbar.svelte';
+import { createEventDispatcher } from 'svelte';
+import { capitalize, fromSnakeCase } from '../../../../shared/text';
+import { Account } from '../../../models/account';
+import type { PageGroup } from '../../../utilities/general-types';
+import { getOpenPage } from '../../../utilities/page';
 
-    export let title: string;
-    export let navItems: string[] = [];
-    export let accountLinks: (string|null)[] = [];
-    export let account: {
-        firstName: string,
-        lastName: string,
-        username: string,
-        email: string,
-        picture?: string,
-        phoneNumber?: string
-    } = {
-        username: 'Guest',
-        email: '',
-        picture: '',
-        firstName: '',
-        lastName: '',
-        phoneNumber: ''
-    }
+export let title: string;
+export let navItems: string[] = [];
+export let accountLinks: (string | null)[] = [];
 
-    export let groups = [];
-    export let active: string;
+export let groups: PageGroup[] = [];
+export let active: string;
 
+const openPage = (page: string) => {
+    if (!page) return console.error('No page provided!');
 
-    const openPage = ({ detail }) => {
-        document.title = capitalize(title) + ': ' + capitalize(fromSnakeCase(detail, '-'));
-        // history.pushState({}, '', location.pathname.split('/').slice(0, -1).join('/') + '/' + detail);
-    }
+    document.title =
+        capitalize(title) + ': ' + capitalize(fromSnakeCase(page, '-'));
 
-    const dispatch = createEventDispatcher();
+    const url = new URL(window.location.href);
+    url.searchParams.set('page', page);
+    window.history.pushState({}, '', url.href);
+    d('openPage', page);
+};
 
-    if (active) {
-        openPage({ detail: active });
-    }
+const d = createEventDispatcher();
+
+$: openPage(active);
 </script>
 
-
-
-
-
-
-
-<main>
-    <Navbar {title} {navItems} {accountLinks} {account}>
-        <slot name="nav"></slot>
+<main class="dashboard">
+    <Navbar {title} {navItems} {accountLinks}>
+        <slot name="nav" />
     </Navbar>
 
-    <Offcanvas {groups} on:openPage={(e) => {openPage(e); dispatch('openPage', e.detail)}} {active}>
-    </Offcanvas>
+    <Offcanvas
+        {groups}
+        on:openPage="{e => {
+            active = e.detail;
+        }}"
+        {active}
+    ></Offcanvas>
 
-    <slot></slot>
+    <slot />
 </main>

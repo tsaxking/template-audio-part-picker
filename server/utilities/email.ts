@@ -1,29 +1,26 @@
-import nodemailer from 'npm:nodemailer';
-import sgTransport from 'npm:nodemailer-sendgrid-transport';
-import { config } from 'npm:dotenv';
-import { getTemplateSync } from './files.ts';
-import env from './env.ts';
-
-config();
+import nodemailer from 'nodemailer';
+import { sgTransport } from '@neoxia-js/nodemailer-sendgrid-transport';
+import { Constructor, FileError, getTemplateSync } from './files';
+import env from './env';
+import { error } from './terminal-logging';
+import { Result } from '../../shared/check';
 
 /**
- * Description placeholder
+ * Sendgrid transporter, used to send emails
  * @date 10/12/2023 - 3:24:32 PM
  *
  * @type {*}
  */
-const transporter = nodemailer.createTransport(sgTransport({
-        service: 'gmail',
+const transporter = nodemailer.createTransport(
+    sgTransport({
         auth: {
-            api_key: env.SENDGRID_API_KEY
+            apiKey: env.SENDGRID_API_KEY || ''
         }
-    }));
-
-
-
+    })
+);
 
 /**
- * Description placeholder
+ * Email options
  * @date 10/12/2023 - 3:24:32 PM
  *
  * @export
@@ -31,22 +28,19 @@ const transporter = nodemailer.createTransport(sgTransport({
  */
 export type EmailOptions = {
     attachments?: {
-        filename: string,
-        path: string
-    }[],
-    constructor: {
-        link?: string,
-        linkText?: string,
-        title: string,
-        message: string,
-        [key: string]: any
-    }
-}
-
-
+        filename: string;
+        path: string;
+    }[];
+    constructor: Constructor & {
+        link?: string;
+        linkText?: string;
+        title: string;
+        message: string;
+    };
+};
 
 /**
- * Description placeholder
+ * Email types
  * @date 10/12/2023 - 3:24:32 PM
  *
  * @export
@@ -59,7 +53,7 @@ export enum EmailType {
 }
 
 /**
- * Description placeholder
+ * Email class
  * @date 10/12/2023 - 3:24:32 PM
  *
  * @export
@@ -84,64 +78,73 @@ export class Email {
         public options: EmailOptions
     ) {}
 
-
     /**
-     * Description placeholder
+     * Sends the email to the specified address in the constructor
      * @date 10/12/2023 - 3:24:32 PM
      *
      * @returns {*}
      */
     send() {
-        const { to, subject, type, options } = this;
-        let { attachments, constructor } = options;
+        try {
+            const { to, subject, type, options } = this;
+            let { constructor } = options;
+            const { attachments } = options;
 
+            constructor = {
+                ...(constructor || {}),
+                logo: (env.DOMAIN || '') + (env.LOGO || ''),
+                homeLink: (env.DOMAIN || '') + (env.HOME_LINK || ''),
+                footer: env.FOOTER || ''
+            };
 
-        constructor = {
-            ...(constructor || {}),
-            logo: (env.DOMAIN || '') + (env.LOGO || ''),
-            homeLink: (env.DOMAIN || '') + (env.HOME_LINK || ''),
-            footer: (env.FOOTER || '')
+            let r: Result<string, FileError> | undefined;
+
+            switch (type) {
+                case EmailType.link:
+                    r = getTemplateSync('emails/link', constructor);
+                    break;
+                case EmailType.text:
+                    r = getTemplateSync('emails/text', constructor);
+                    break;
+                case EmailType.error:
+                    r = getTemplateSync('emails/error', constructor);
+                    break;
+                default:
+                    break;
+            }
+
+            if (!r) {
+                throw new Error('Unable to get email template');
+            }
+
+            if (r.isOk()) {
+                const html = r.value;
+                const mailOptions = {
+                    from: env.SENDGRID_DEFAULT_FROM,
+                    to,
+                    subject,
+                    html,
+                    attachments
+                };
+
+                return new Promise(resolve => {
+                    transporter.sendMail(
+                        mailOptions
+                        // (err: Error, info: { response: string }) => {
+                        //     if (err) {
+                        //         console.error(err);
+                        //     } else {
+                        //         console.log('Email sent: ' + info.response);
+                        //         resolve(info);
+                        //     }
+                        // },
+                    );
+                });
+            }
+
+            throw r.error;
+        } catch (e) {
+            error('Unable to send email:', e);
         }
-
-        let html: string;
-        let temp: string|boolean;
-        
-        switch (type) {
-            case EmailType.link:
-                temp = getTemplateSync('./emails/link', constructor);
-                html = typeof temp === 'string' ? temp : '';
-                break;
-            case EmailType.text:
-                temp = getTemplateSync('./emails/text', constructor);
-                html = typeof temp === 'string' ? temp : '';
-                break;
-            case EmailType.error:
-                temp = getTemplateSync('./emails/error', constructor);
-                html = typeof temp === 'string' ? temp : '';
-                break;
-            default:
-                html = '';
-                break;
-        }
-
-
-        const mailOptions = {
-            from: env.SENDGRID_DEFAULT_FROM,
-            to,
-            subject,
-            html,
-            attachments
-        };
-
-        return new Promise((resolve, reject) => {
-            transporter.sendMail(mailOptions, (err: Error, info: { response: string }) => {
-                if (err) {
-                    console.error(err);
-                } else {
-                    console.log('Email sent: ' + info.response);
-                    resolve(info);
-                }
-            });
-        });
     }
 }

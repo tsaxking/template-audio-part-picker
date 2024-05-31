@@ -1,85 +1,74 @@
-import env, { __root } from "./utilities/env.ts";
-import { log } from "./utilities/terminal-logging.ts";
-import { App, ResponseStatus } from "./structure/app/app.ts";
-import { Session } from "./structure/sessions.ts";
-import * as path from 'node:path';
-import { getJSONSync, log as serverLog } from "./utilities/files.ts";
-import { homeBuilder } from "./utilities/page-builder.ts";
-import Account from "./structure/accounts.ts";
-import { runBuild } from "./bundler.ts";
-import { router as admin } from './routes/admin.ts';
-import { router as account } from './routes/account.ts';
-import { router as api } from './routes/api.ts';
-import Role from "./structure/roles.ts";
-import { validate } from "./middleware/data-type.ts";
-import { uuid } from "./utilities/uuid.ts";
-import os from "https://deno.land/x/dos@v0.11.0/mod.ts";
+import env, { __root } from './utilities/env';
+import { log } from './utilities/terminal-logging';
+import { App } from './structure/app/app';
+import { getJSON, log as serverLog } from './utilities/files';
+import { homeBuilder } from './utilities/page-builder';
+import Account from './structure/accounts';
+import { router as admin } from './routes/admin';
+import { router as account } from './routes/account';
+import { router as api } from './routes/api';
+import { router as role } from './routes/roles';
+import { FileUpload } from './middleware/stream';
+import { ReqBody } from './structure/app/req';
+import { parseCookie } from '../shared/cookie';
+import { stdin } from './utilities/stdin';
+import path from 'path';
+import { DB } from './utilities/databases';
+import { Session } from './structure/sessions';
 
-console.log('Platform:', os.platform());
+if (process.argv.includes('--stats')) {
+    const measure = () => {
+        console.clear();
+        const { rss, heapUsed, heapTotal } = process.memoryUsage();
+        console.log('rss:', rss / 1024 / 1024, 'MB');
+        console.log('heap:', heapUsed / 1024 / 1024, 'MB');
+        console.log('total:', heapTotal / 1024 / 1024, 'MB');
+    };
+    setInterval(measure, 1000);
+}
 
 const port = +(env.PORT || 3000);
-const domain = env.DOMAIN || `http://localhost:${port}`;
 
+export const app = new App<{
+    test: string;
+}>(port, env.DOMAIN || `http://localhost:${port}`);
 
-export const app = new App(port, domain, {
-    // onListen: () => {
-        // log(`Listening on ${domain}`);
-    // },
-    // onConnection: (socket) => {
-        // log('New connection:', socket.id);
-    // },
-    ioPort: +(env.SOCKET_PORT || port + 1)
+Session.setDeleteInterval(1000 * 60 * 10); // delete unused sessions every 10 minutes
+
+if (env.ENVIRONMENT === 'dev') {
+    stdin.on('rb', () => {
+        console.log('Reloading clients...');
+        app.io.emit('reload');
+    });
+}
+
+app.post('/env', (req, res) => {
+    res.json({
+        ENVIRONMENT: env.ENVIRONMENT
+    });
 });
 
-const builder = await runBuild();
-
-// building client listeners
-builder.on('build', () => {
-    if (env.ENVIRONMENT === 'dev') app.io.emit('reload');
-    log('Build complete');
-});
-
-builder.on('error', (e) => log('Build error:', e));
-
-app.post('/test-stream', (req, res) => {
-    const data = new Array(100).fill('').map(uuid);
-    // console.log('Streaming', data);
-    res.stream(data);
-});
-
-
-app.post('/test', (req, res, next) => {
-    res.sendStatus('test:success');
-});
-
-app.post('/ping', (req, res) => {
-    res.send('pong');
-});
-
-app.post('/test-validation', validate({
-    username: (v: any) => v === 'fail', 
-    password: (v: any) => v === 'test'
-}, {
-    onspam: (req, res, next) => {
-        res.sendStatus('test:fail');
-    }
-}), (req, res, next) => {
-    res.sendStatus('test:success');
+app.post('/socket-init', (req, res) => {
+    const cookie = req.headers.get('cookie');
+    res.json(parseCookie(cookie || ''));
 });
 
 app.use('/*', (req, res, next) => {
-    log(`[${req.method}] ${req.url}`);
+    log(`[${req.method}] ${req.originalUrl}`);
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    // res.setHeader('Access-Control-Allow-Credentials', 'true');
+    // res.setHeader('Access-Control-Allow-Headers', '*');
+    // res.setHeader('Access-Control-Allow-Methods', '*');
+    // res.setHeader('Access-Control-Expose-Headers', '*');
     next();
 });
 
 app.static('/client', path.resolve(__root, './client'));
 app.static('/public', path.resolve(__root, './public'));
 app.static('/dist', path.resolve(__root, './dist'));
-app.static('/uploads', path.resolve(__root, './uploads'));
+app.static('/uploads', path.resolve(__root, './storage/uploads'));
 
-app.use('/*', Session.middleware());
-
-app.post('/socket-url', (req, res, next) => {
+app.post('/socket-url', (req, res) => {
     res.json({
         url: env.SOCKET_DOMAIN
     });
@@ -93,20 +82,21 @@ app.get('/robots.txt', (req, res) => {
     res.sendFile(path.resolve(__root, './public/pictures/robots.jpg'));
 });
 
-function stripHtml(body: any) {
+function stripHtml(body: ReqBody) {
     if (!body) return body;
-    let files: any;
+    let files: unknown;
 
-    if (body.files) {
-        files = JSON.parse(JSON.stringify(body.files));
+    if (body.$$files) {
+        files = JSON.parse(JSON.stringify(body.$$files));
         delete body.files;
     }
 
-    let obj: any = {};
+    let obj: ReqBody = {};
 
     const remove = (str: string) => str.replace(/(<([^>]+)>)/gi, '');
 
-    const strip = (obj: any): any => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const strip = (obj: any): unknown => {
         switch (typeof obj) {
             case 'string':
                 return remove(obj);
@@ -121,39 +111,36 @@ function stripHtml(body: any) {
             default:
                 return obj;
         }
-    }
+    };
 
-
-    obj = strip(body);
+    obj = strip(body) as ReqBody;
 
     if (files) {
-        obj.files = files;
+        obj.$$files = files;
     }
 
     return obj;
 }
 
 app.post('/*', (req, res, next) => {
-    req.body = stripHtml(req.body);
+    req.body = stripHtml(req.body as ReqBody);
 
     try {
         const b = JSON.parse(JSON.stringify(req.body)) as {
-            $$files?: any;
+            $$files?: FileUpload[];
             password?: string;
             confirmPassword?: string;
         }; // remove deep references
         delete b?.password;
         delete b?.confirmPassword;
         delete b?.$$files;
-        console.log(b);
+        log(b);
     } catch {
-        console.log(req.body);
+        log(req.body);
     }
-
 
     next();
 });
-
 
 // TODO: There is an error with the email validation middleware
 // app.post('/*', emailValidation(['email', 'confirmEmail'], {
@@ -166,18 +153,17 @@ app.post('/*', (req, res, next) => {
 //     // }
 // }));
 
-
-const homePages = getJSONSync('pages/home') as string[];
-
-app.get('/', (req, res, next) => {
+app.get('/', (req, res) => {
     res.redirect('/home');
 });
 
 app.get('/*', async (req, res, next) => {
-    if (homePages.includes(req.url.slice(1))) {
-        return res.send(
-            await homeBuilder(req.url)
-        );
+    const homePages = await getJSON<string[]>('pages/home');
+    if (homePages.isOk()) {
+        if (homePages.value.includes(req.url.slice(1))) {
+            const r = await homeBuilder(req.url);
+            if (r.isOk()) res.send(r.value);
+        }
     }
     next();
 });
@@ -185,88 +171,94 @@ app.get('/*', async (req, res, next) => {
 app.get('/test/:page', (req, res, next) => {
     if (env.ENVIRONMENT !== 'dev') return next();
     const s = res.sendTemplate('entries/test/' + req.params.page);
-    if (s === ResponseStatus.error || s === ResponseStatus.fileNotFound) {
+    if (s.isErr()) {
         res.sendStatus('page:not-found', { page: req.params.page });
     }
 });
 
 app.route('/api', api);
 app.route('/account', account);
+app.route('/roles', role);
 
 app.use('/*', Account.autoSignIn(env.AUTO_SIGN_IN));
 
 app.get('/*', (req, res, next) => {
-    if (!req.session?.accountId) {
-        req.session!.prevUrl = req.url;
+    if (!req.session.accountId) {
+        if (
+            ![
+                '/account/sign-in',
+                '/account/sign-up',
+                '/account/forgot-password'
+            ].includes(req.url)
+        ) {
+            // only save the previous url if it's not a sign-in, sign-up, or forgot-password page
+            // this is so that the user can be redirected back to the page they initially were trying to access
+            req.session.prevUrl = req.url;
+        }
         return res.redirect('/account/sign-in');
     }
 
     next();
 });
 
+app.get('/dashboard/admin', Account.allowPermissions('admin'), (_req, res) => {
+    res.sendTemplate('entries/dashboard/admin');
+});
+
 app.route('/admin', admin);
 
+app.get('/dashboard/:dashboard', (req, res) => {
+    res.sendTemplate('entries/dashboard/' + req.params.dashboard);
+});
 
-
-
-
-
-
-
-
-
-
-
-
-
-app.get('/user/*', Account.isSignedIn,  (req, res, next) => {
+app.get('/user/*', Account.isSignedIn, (req, res) => {
     res.sendTemplate('entries/user');
 });
 
-app.get('/admin/*', Role.allowRoles('admin'), (req, res, next) => {
-    res.sendTemplate('entries/admin');
+app.get('/*', (req, res) => {
+    if (!res.fulfilled) {
+        res.sendStatus('page:not-found', { page: req.pathname });
+    }
 });
 
-
-
-
-
-
-
-
-
 app.final<{
-    $$files?: any;
+    $$files?: FileUpload;
     password?: string;
     confirmPassword?: string;
 }>((req, res) => {
-    req.session.save();
+    // req.session.save();
 
-    serverLog('request', {
-        date: Date.now(),
-        duration: Date.now() - req.start,
-        ip: req.session?.ip,
-        method: req.method,
-        url: req.url,
-        status: res._status,
-        userAgent: req.headers.get('user-agent') || '',
-        body: req.method == 'post' ? JSON.stringify((() => {
-            let { body } = req;
-            body = JSON.parse(JSON.stringify(body)) as {
-    $$files?: any;
-    password?: string;
-    confirmPassword?: string;
-};
-            delete body?.password;
-            delete body?.confirmPassword;
-            delete body?.$$files;
-            return body;
-        })()) : '',
-        params: JSON.stringify(req.params),
-        query: JSON.stringify(req.query)
-    });
-
-    if (!res.fulfilled) {
-        return res.sendStatus('page:not-found', { page: req.url });
+    if (res.fulfilled) {
+        serverLog('request', {
+            date: Date.now(),
+            duration: Date.now() - req.start,
+            ip: req.session?.ip,
+            method: req.method,
+            url: req.pathname,
+            status: res._status,
+            userAgent: req.headers.get('user-agent') || '',
+            // body: '',
+            body:
+                req.method == 'post' && req.body
+                    ? JSON.stringify(
+                          (() => {
+                              let { body } = req;
+                              body = JSON.parse(JSON.stringify(body)) as {
+                                  $$files?: FileUpload;
+                                  password?: string;
+                                  confirmPassword?: string;
+                              };
+                              delete body?.password;
+                              delete body?.confirmPassword;
+                              delete body?.$$files;
+                              return body;
+                          })()
+                      )
+                    : '',
+            params: JSON.stringify(req.params),
+            query: JSON.stringify(req.query)
+        });
     }
 });
+
+DB.em.on('connect', () => app.start());

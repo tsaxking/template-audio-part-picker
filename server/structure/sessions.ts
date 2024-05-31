@@ -1,12 +1,10 @@
-// import { Request, Response, NextFunction } from 'npm:express';
-import { uuid } from '../utilities/uuid.ts';
-import Account from './accounts.ts';
-import { DB } from "../utilities/databases.ts";
-import { Next, ServerFunction, CookieOptions } from "./app/app.ts";
-import { app } from "../server.ts";
-import { Req } from "./app/req.ts";
-import { Res } from "./app/res.ts";
-
+import express from 'express';
+import { DB } from '../utilities/databases';
+import { uuid } from '../utilities/uuid';
+import { error, log } from '../utilities/terminal-logging';
+import { App, CookieOptions } from './app/app';
+import Account from './accounts';
+import { attemptAsync, resolveAll } from '../../shared/check';
 
 /**
  * Session object from the database
@@ -16,32 +14,17 @@ import { Res } from "./app/res.ts";
  * @typedef {SessionObj}
  */
 export type SessionObj = {
-    ip: string;
+    ip?: string;
     id: string;
-    latestActivity: number;
-    accountId: string|null;
+    latestActivity?: number;
+    accountId?: string;
     prevUrl?: string;
     userAgent?: string;
     created: number;
     limitTime?: number;
-}
-
-/**
- * The options for the session middleware
- * @date 10/12/2023 - 3:13:58 PM
- *
- * @typedef {SessionOptions}
- */
-type SessionOptions = {
-    cookie?: CookieOptions;
-    request?: {
-        max: number;
-        per: number;
-        onOverload?: (session: Session) => void;
-    };
-    name?: string;
-}
-
+    requests: number;
+    customData?: string;
+};
 
 /**
  * This session class represents a session, which is a connection from a client.
@@ -52,7 +35,97 @@ type SessionOptions = {
  * @class Session
  * @typedef {Session}
  */
-export class Session {
+export class Session<T = unknown> {
+    /**
+     * Delete all unused sessions (not signed in)
+     *
+     * @public
+     * @static
+     * @async
+     * @returns {unknown}
+     */
+    public static async deleteUnused() {
+        return attemptAsync(async () => {
+            const sessions = await DB.all('sessions/all');
+            if (sessions.isErr()) throw sessions.error;
+            const notUsed = sessions.value.filter(s => !s.accountId);
+            const res = resolveAll(
+                await Promise.all(
+                    notUsed.map(async s =>
+                        DB.run('sessions/delete', {
+                            id: s.id
+                        })
+                    )
+                )
+            );
+            if (res.isErr()) throw res.error;
+            return res.value;
+        });
+    }
+
+    /**
+     * Interval of deletion
+     *
+     * @private
+     * @static
+     * @type {?NodeJS.Timeout}
+     */
+    private static deleteInterval?: NodeJS.Timeout;
+
+    /**
+     * Sets the delete interval to a specified number of milliseconds
+     *
+     * @public
+     * @static
+     * @param {number} ms
+     */
+    public static setDeleteInterval(ms: number) {
+        if (Session.deleteInterval) clearInterval(Session.deleteInterval);
+        Session.deleteInterval = setInterval(Session.deleteUnused, ms);
+    }
+
+    /**
+     *
+     *
+     * @public
+     * @static
+     * @async
+     * @param {App} app
+     * @param {express.Request} req
+     * @param {express.Response} res
+     * @returns {Promise<Session>}
+     */
+    public static async from<sessionInfo = unknown>(
+        app: App<unknown>,
+        req: express.Request,
+        res: express.Response
+    ): Promise<Session<sessionInfo>> {
+        const id = req.headers.cookie
+            ?.split(';')
+            .find(c => c.includes('ssid'))
+            ?.split('=')[1];
+        // console.log(id);
+        if (id) {
+            const s = await Session.get<sessionInfo>(app, id);
+            if (s) return s;
+
+            return Session.newSession<sessionInfo>(app, req, res);
+        } else {
+            return Session.newSession<sessionInfo>(app, req, res);
+        }
+    }
+
+    /**
+     * Returns a new UUID for the session
+     * @date 3/8/2024 - 6:05:08 AM
+     *
+     * @static
+     * @returns {*}
+     */
+    static newId() {
+        return (uuid() + uuid() + uuid() + uuid()).replace(/-/g, '');
+    }
+
     /**
      * This is not implemented yet, but it will be for rate limiting
      * @date 10/12/2023 - 3:13:58 PM
@@ -67,9 +140,8 @@ export class Session {
     static requestsInfo: {
         max: number;
         per: number;
-        onOverload?: (session: Session) => void;
     } = {
-        max: Infinity,
+        max: 500,
         per: 60 * 1000
     };
 
@@ -81,7 +153,7 @@ export class Session {
      * @type {CookieOptions}
      */
     static cookieOptions: CookieOptions = {
-        maxAge: 60 * 60 * 24 * 7,
+        maxAge: 60 * 60 * 24 * 7 * 1000,
         httpOnly: true,
         sameSite: 'Strict'
     };
@@ -92,7 +164,7 @@ export class Session {
      * @static
      * @type {string}
      */
-    static sessionName: string = 'ssid';
+    static readonly sessionName = 'ssid';
 
     /**
      * Retrieves a session from the database
@@ -102,11 +174,24 @@ export class Session {
      * @param {string} id
      * @returns {(Session | undefined)}
      */
-    static get(id: string): Session | undefined {
-        const s = DB.get('sessions/get', { id });
-        return s ? Session.fromSessObj(s) : undefined;
-    }
+    static async get<sessionInfo = unknown>(
+        app: App,
+        id: string
+    ): Promise<Session<sessionInfo> | undefined> {
+        // if (Session.cache.has(id)) {
+        //     return Session.cache.get(id);
+        // }
+        const res = await DB.get('sessions/get', { id });
+        if (res.isOk() && res.value) {
+            return Session.fromSessObj<sessionInfo>(app, res.value);
+        }
 
+        if (res.isErr()) {
+            error(res.error);
+        }
+
+        log('No session found :(');
+    }
 
     /**
      * Converts a session object from the database to a session class
@@ -116,14 +201,24 @@ export class Session {
      * @param {SessionObj} s
      * @returns {Session}
      */
-    static fromSessObj(s: SessionObj): Session {
-        const session = new Session();
+    static fromSessObj<sessionInfo = unknown>(
+        app: App,
+        s: SessionObj
+    ): Session<sessionInfo> {
+        // log('Building from:', s);
+
+        const session = new Session<sessionInfo>(app);
         session.ip = s.ip;
         session.id = s.id;
         session.latestActivity = s.latestActivity;
-        session.prevUrl = s.prevUrl;
+        session.$prevUrl = s.prevUrl;
         session.userAgent = s.userAgent;
-        session.accountId = s.accountId || undefined;
+        session.accountId = s.accountId;
+        session.created = s.created;
+        session.requests = s.requests;
+        session.customData = JSON.parse(s.customData || '{}') as sessionInfo;
+
+        // log('Built:', session);
         return session;
     }
 
@@ -136,10 +231,23 @@ export class Session {
      * @param {Res} res
      * @returns {(Session|undefined)}
      */
-    static newSession(req: Req, res: Res): Session|undefined {
-        const s = new Session(req);
-        res.cookie(Session.sessionName, s.id, Session.cookieOptions);
-        req.addCookie('ssid', s.id);
+    static newSession<sessionInfo = unknown>(
+        app: App,
+        req: express.Request,
+        res: express.Response
+    ): Session<sessionInfo> {
+        const s = new Session<sessionInfo>(app, req);
+        // res.cookie(Session.sessionName, s.id, {
+        //     maxAge: Session.cookieOptions.maxAge,
+        //     httpOnly: Session.cookieOptions.httpOnly,
+        //     path: '/'
+        // });
+        // req.cookies[Session.sessionName] = s.id;
+        res.cookie(Session.sessionName, s.id, {
+            maxAge: Session.cookieOptions.maxAge,
+            httpOnly: Session.cookieOptions.httpOnly,
+            path: '/'
+        });
 
         DB.run('sessions/new', {
             id: s.id,
@@ -149,40 +257,11 @@ export class Session {
             userAgent: s.userAgent || '',
             prevUrl: s.prevUrl || '',
             requests: s.requests,
-            created: s.created
+            created: s.created,
+            customData: JSON.stringify(s.customData)
         });
 
         return s;
-    }
-
-
-    /**
-     * The middleware function for the session
-     * @date 10/12/2023 - 3:13:58 PM
-     *
-     * @static
-     * @param {?SessionOptions} [options]
-     * @returns {ServerFunction}
-     */
-    static middleware(options?: SessionOptions): ServerFunction<any> {
-        if (options) {
-            if (options.request) {
-                Session.requestsInfo = options.request;
-            }
-            if (options.cookie) {
-                Session.cookieOptions = options.cookie;
-            }
-            if (options.name) {
-                Session.sessionName = options.name;
-            }
-        }
-
-        return (req: Req, res: Res, next: Next) => {
-            const s = req.session;
-            s.requests++;
-            s.latestActivity = Date.now();
-            next();
-        }
     }
 
     /**
@@ -191,7 +270,7 @@ export class Session {
      *
      * @type {string}
      */
-    public ip: string = '';
+    public ip: string | undefined = '';
     /**
      * The id of the session
      * @date 10/12/2023 - 3:13:58 PM
@@ -212,28 +291,28 @@ export class Session {
      *
      * @type {number}
      */
-    public latestActivity: number = Date.now();
+    private $latestActivity: number | undefined = Date.now();
     /**
      * The previous url (used for redirects)
      * @date 10/12/2023 - 3:13:58 PM
      *
      * @type {?string}
      */
-    public prevUrl?: string;
+    private $prevUrl: string | undefined;
     /**
      * Not implemented yet, but this will be used for rate limiting
      * @date 10/12/2023 - 3:13:58 PM
      *
      * @type {number}
      */
-    public requests: number = 0;
+    public requests = 0;
     /**
      * The time this session was created
      * @date 10/12/2023 - 3:13:57 PM
      *
      * @type {number}
      */
-    public readonly created: number = Date.now();
+    public created: number = Date.now();
     /**
      * The client user agent, if available
      * @date 10/12/2023 - 3:13:57 PM
@@ -241,6 +320,7 @@ export class Session {
      * @type {?string}
      */
     public userAgent?: string;
+    public customData: T = {} as T;
 
     /**
      * Creates an instance of Session.
@@ -249,20 +329,164 @@ export class Session {
      * @constructor
      * @param {?Req} [req]
      */
-    constructor(req?: Req) {
-        this.id = (uuid() + uuid() + uuid() + uuid()).replace(/-/g, '');
+    constructor(
+        private readonly app: App,
+        req?: express.Request
+    ) {
+        this.id = Session.newId();
 
         if (req) {
             this.ip = req.ip;
-            this.userAgent = req.headers.get('user-agent') || '';
+            this.userAgent = req.headers['user-agent'] || '';
         }
 
+        // Session.cache.set(this.id, this);
+
+        // setTimeout(() => this.destroy(), Session.cookieOptions.maxAge);
+
         // if (Session.requestsInfo.max < Infinity) {
-            // log(Session.requestsInfo.max, Session.requestsInfo.per);
-            // setInterval(() => {
-            //     this.requests = 0;
-            // }, Session.requestsInfo.per);
+        //     // log(Session.requestsInfo.max, Session.requestsInfo.per);
+        //     setInterval(() => {
+        //         // console.log('Resetting requests');
+        //         this.requests = 0;
+        //         this.save();
+        //     }, Session.requestsInfo.per);
         // }
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    /**
+     * The timeout for the session
+     * Not in use as the cookie lifetime is longer setTimeout will allow
+     * @date 3/8/2024 - 6:05:08 AM
+     *
+     * @private
+     * @type {?*}
+     */
+    private timeout?: NodeJS.Timeout;
+
+    /**
+     * The time of the latest request
+     * @date 3/8/2024 - 6:05:08 AM
+     *
+     * @public
+     * @type {(number | undefined)}
+     */
+    public get latestActivity(): number | undefined {
+        return this.$latestActivity;
+    }
+
+    /**
+     * The time of the latest request
+     * @date 3/8/2024 - 6:05:08 AM
+     *
+     * @public
+     * @type {number}
+     */
+    public set latestActivity(time: number | undefined) {
+        this.$latestActivity = time;
+        // this.save();
+        if (this.timeout) clearTimeout(this.timeout);
+
+        this.timeout = setTimeout(
+            () => {
+                this.requests = 0;
+                this.save();
+                // Session.cache.delete(this.id);
+            },
+            1000 * 60 * 5
+        );
+    }
+
+    /**
+     * Runs when a new request is made, used for rate limiting
+     * @date 3/8/2024 - 6:05:08 AM
+     *
+     * @async
+     * @returns {*}
+     */
+    async newRequest() {
+        // this.requests = this.requests + 1;
+        // // await this.save();
+        // // console.log('Requests:', this.requests);
+        // this.latestActivity = Date.now();
+        // if (this.requests > Session.requestsInfo.max) {
+        //     this.blacklist('Rate limited');
+        // }
+    }
+
+    /**
+     * The previous url (used for redirects)
+     * @date 3/8/2024 - 6:05:08 AM
+     *
+     * @type {(string | undefined)}
+     */
+    get prevUrl(): string | undefined {
+        return this.$prevUrl;
+    }
+
+    /**
+     * The previous url (used for redirects)
+     * @date 3/8/2024 - 6:05:08 AM
+     *
+     * @type {string}
+     */
+    set prevUrl(url: string | undefined) {
+        this.$prevUrl = url;
+        this.save();
+    }
+
+    // for caching
+    /**
+     * The account object, if the user is signed in (cached)
+     * @date 3/8/2024 - 6:05:08 AM
+     *
+     * @private
+     * @type {?Account}
+     */
+    private $account?: Account;
+
+    /**
+     * Checks if the session is blacklisted
+     * @date 3/8/2024 - 6:05:08 AM
+     *
+     * @async
+     * @returns {Promise<boolean>}
+     */
+    async isBlacklisted(): Promise<boolean> {
+        if (this.ip) {
+            const res = await DB.get('blacklist/from-ip', { ip: this.ip });
+            if (res.isOk() && res.value) return true;
+        }
+
+        if (this.accountId) {
+            const res = await DB.get('blacklist/from-account', {
+                accountId: this.accountId
+            });
+            if (res.isOk() && res.value) return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Blacklists the session
+     * @date 3/8/2024 - 6:05:07 AM
+     *
+     * @async
+     * @param {string} reason
+     * @returns {*}
+     */
+    async blacklist(reason: string) {
+        this.requests = 0; // for when/if the blacklist is removed
+        await this.save();
+        DB.run('blacklist/new', {
+            id: uuid(),
+            ip: this.ip || '',
+            reason,
+            accountId: this.accountId,
+            created: Date.now()
+        });
     }
 
     /**
@@ -272,9 +496,12 @@ export class Session {
      * @readonly
      * @type {(Account | null)}
      */
-    get account(): Account | null {
-        if (!this.accountId) return null;
-        return Account.fromId(this.accountId);
+    async getAccount(): Promise<Account | undefined> {
+        if (this.$account) return this.$account;
+        if (!this.accountId) return;
+        const a = await Account.fromId(this.accountId);
+        this.$account = a;
+        return a;
     }
 
     /**
@@ -283,18 +510,24 @@ export class Session {
      *
      * @param {Account} account
      */
-    signIn(account: Account) {
+    async signIn(account: Account) {
         this.accountId = account.id;
-        this.save();
+        this.$account = account;
+        const res = await this.save();
+        if (res.isErr()) error(res.error);
+        return res;
     }
 
     /**
      * Sign out of the account
      * @date 10/12/2023 - 3:13:57 PM
      */
-    signOut() {
+    async signOut() {
         this.accountId = undefined;
-        this.save();
+        this.$account = undefined;
+        const res = await this.save();
+        if (res.isErr()) error(res.error);
+        return res;
     }
 
     /**
@@ -302,20 +535,19 @@ export class Session {
      * @date 10/12/2023 - 3:13:57 PM
      */
     destroy() {
-        DB.run('sessions/delete', { id: this.id });
+        return DB.run('sessions/delete', { id: this.id });
     }
 
     /**
      * Save the session to the database
      * @date 10/12/2023 - 3:13:57 PM
      */
-    save() {
-        this.account?.save();
+    async save() {
+        const s = await DB.get('sessions/get', { id: this.id });
 
-        const s = DB.get('sessions/get', { id: this.id });
-
-        if (s) {
-            DB.run('sessions/update', {
+        if (s.isOk() && s.value) {
+            // console.log(Colors.FgRed, '!!!Updating session!!!', Colors.Reset);
+            return DB.run('sessions/update', {
                 id: this.id,
                 ip: this.ip || '',
                 latestActivity: this.latestActivity,
@@ -323,10 +555,10 @@ export class Session {
                 userAgent: this.userAgent || '',
                 prevUrl: this.prevUrl || '',
                 requests: this.requests,
-                created: this.created
+                customData: JSON.stringify(this.customData || {})
             });
         } else {
-            DB.run('sessions/new', {
+            return DB.run('sessions/new', {
                 id: this.id,
                 ip: this.ip || '',
                 latestActivity: this.latestActivity,
@@ -334,7 +566,8 @@ export class Session {
                 userAgent: this.userAgent || '',
                 prevUrl: this.prevUrl || '',
                 requests: this.requests,
-                created: this.created
+                created: this.created,
+                customData: JSON.stringify(this.customData || {})
             });
         }
     }
@@ -346,7 +579,7 @@ export class Session {
      * @param {string} event
      * @param {...any[]} args
      */
-    emit(event: string, ...args: any[]) {
-        app.io.to(this.id).emit(event, ...args);
+    emit(event: string, args: unknown) {
+        this.app.io.to(this.id).emit(event, args);
     }
 }

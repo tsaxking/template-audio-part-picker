@@ -1,85 +1,68 @@
-import path from 'npm:path';
-import callsite from 'npm:callsite';
-import { Colors } from "./colors.ts";
-import os from "https://deno.land/x/dos@v0.11.0/mod.ts";
+import path from 'path';
+import { config } from 'dotenv';
 
-
-/**
- * Root directory of the project
- * @date 10/12/2023 - 3:24:39 PM
- *
- * @type {string}
- */
-export const __root: string = (() => {
-    switch (os.platform()) {
-        case 'linux':
-            return new URL('../../', import.meta.url).pathname;
-        case 'windows':
-            return new URL('../../', import.meta.url).pathname.substring(1);
-        default:
-            throw new Error('Unsupported platform: ' + os.platform());
-    }
-})();
+config();
 
 /**
- * Uploads directory
- * @date 10/12/2023 - 3:24:39 PM
- *
- * @type {string}
- */
-export const __uploads: string = path.resolve(__root, './storage/uploads/');
-
-/**
- * Logs directory
- * @date 10/12/2023 - 3:24:39 PM
- *
- * @type {string}
- */
-export const __logs: string = path.resolve(__root, './storage/logs/');
-
-/**
- * Templates directory
- * @date 10/12/2023 - 3:24:39 PM
+ * Full path of the root directory
+ * @date 3/8/2024 - 5:49:10 AM
  *
  * @type {*}
  */
-export const __templates: string = path.resolve(__root, './public/templates/');
-
+export const __root = path.resolve(__dirname, '../../');
 /**
- * Directory of the file that called this function
- * @date 10/12/2023 - 3:24:39 PM
- */
-export const dirname = () => {
-    const site = callsite()[2];
-    return './' + path.relative(__root, site.getFileName().replace('file:', ''));
-}
-
-
-
-/**
- * Environment variables
- * @date 10/12/2023 - 3:24:39 PM
+ * Full path of the templates directory
+ * @date 3/8/2024 - 5:49:10 AM
  *
  * @type {*}
  */
-const env: {
-    [key: string]: string | undefined;
-} = Deno.env.toObject();
+export const __templates = path.resolve(__root, './public/templates/');
+/**
+ * Full path of the public directory
+ * @date 3/8/2024 - 5:49:10 AM
+ *
+ * @type {*}
+ */
+export const __public = path.resolve(__root, './public/');
+/**
+ * Full path of the uploads directory
+ * @date 3/8/2024 - 5:49:10 AM
+ *
+ * @type {*}
+ */
+export const __uploads = path.resolve(__root, './storage/uploads/');
+/**
+ * Full path of the logs directory
+ * @date 3/8/2024 - 5:49:10 AM
+ *
+ * @type {*}
+ */
+export const __logs = path.resolve(__root, './storage/logs/');
+/**
+ * Full path of the client directory
+ * @date 3/8/2024 - 5:49:10 AM
+ *
+ * @type {*}
+ */
+export const __entries = path.resolve(__root, './client/entries/');
 
-console.log(Colors.FgGreen, 'Loading environment variables...', Colors.Reset);
+/**
+ * Unify paths across different operating systems
+ * @date 3/8/2024 - 5:49:10 AM
+ *
+ * @param {string} str
+ * @returns {*}
+ */
+export const unify = (str: string) => str.replace(/\\/g, '/');
 
-if (Object.keys(env).length === 56) {
-    console.log(Colors.FgYellow, 'Environment were not loaded, loading manually from .env file... (This may not work properly, if you see errors, just restart)', Colors.Reset);
-    // variables have not been loaded from .env file
-    const file = path.resolve(__root, './.env');
-    const data = Deno.readTextFileSync(file);
-    const lines = data.split('\n');
-    for (const line of lines) {
-        const [key, value] = line.split('=');
-        env[key.trim()] = value.replace(/"/g, '').replace(/'/g, '').trim();
+const env = process.env;
+
+for (const key in env) {
+    if (env[key] === 'true' || env[key] === 'y' || env[key] === 'yes') {
+        env[key] = 'true'; // truthy
+    } else if (env[key] === 'false' || env[key] === 'n' || env[key] === 'no') {
+        env[key] = ''; // falsy
     }
 }
-
-console.log(Colors.FgGreen, 'Environment variables loaded!', Colors.Reset);
 
 export default env;
